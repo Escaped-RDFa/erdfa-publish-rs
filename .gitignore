@@ -1,0 +1,8 @@
+/target
+/shards/*
+!/shards/kiro-chats/
+/shards/kiro-chats/*
+!/shards/kiro-chats/indexes/
+/shards/kiro-chats/indexes/*
+!/shards/kiro-chats/indexes/INDEX_SUMMARY.json
+result
