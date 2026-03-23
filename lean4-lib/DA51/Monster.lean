@@ -156,5 +156,3 @@ def main : IO Unit := do
   IO.println s!"\nWrote monster_element.cbor ({bytes.size} bytes)"
 
 end DA51.Monster
-
-def main := DA51.Monster.main
