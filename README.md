@@ -205,3 +205,9 @@ Supports all DASL address types: MonsterWalk, ASTNode, Protocol, NestedCID, Harm
 ## License
 
 MIT OR Apache-2.0
+
+## Customer Onboarding
+
+**New here?** See [docs/CUSTOMER_ONBOARDING.md](docs/CUSTOMER_ONBOARDING.md) — run your first Cl(15,0,0) experiment and get AI peer review in 3 minutes.
+
+Any user who can produce valid DA51-tagged CBOR shards is a customer. The `erdfa-cli` tool handles the encoding — you bring the experiment.
