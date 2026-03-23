@@ -42,7 +42,7 @@ def main : IO Unit := do
   let bytes := encode testShard
   IO.println s!"Encoded {bytes.size} bytes"
   IO.println s!"First 3 bytes: {bytes.data[0]!} {bytes.data[1]!} {bytes.data[2]!}"
-  IO.println s!"DA51 tag: 0x{String.mk (Nat.toDigits 16 (bytes.data[1]!.toNat * 256 + bytes.data[2]!.toNat))}"
+  IO.println s!"DA51 tag: 0x{String.ofList (Nat.toDigits 16 (bytes.data[1]!.toNat * 256 + bytes.data[2]!.toNat))}"
   -- Write to file
   let outpath := "roundtrip_test.cbor"
   IO.FS.writeBinFile outpath bytes
