@@ -24,6 +24,7 @@ pub enum Platform {
     Mastodon,    // 500 chars → ~120 bytes ZWC
     Bluesky,     // 300 chars → ~68 bytes ZWC
     GitHub,      // commit body → ~45,000 bytes
+    Wormhole,    // cross-chain VAA → ~30KB payload, verifiable on 44+ chains
 }
 
 impl Platform {
@@ -40,6 +41,7 @@ impl Platform {
             Platform::Mastodon => 120,
             Platform::Bluesky => 68,
             Platform::GitHub => 45_000,
+            Platform::Wormhole => 30_000,
         }
     }
 
@@ -56,6 +58,7 @@ impl Platform {
             Platform::Mastodon => Box::new(Tweet280), // same ZWC strategy
             Platform::Bluesky => Box::new(Tweet280),
             Platform::GitHub => Box::new(DiscordBlock),
+            Platform::Wormhole => Box::new(crate::stego::WormholeCarrier),
         }
     }
 
@@ -71,6 +74,7 @@ impl Platform {
             Platform::Mastodon => "mastodon",
             Platform::Bluesky => "bluesky",
             Platform::GitHub => "github",
+            Platform::Wormhole => "wormhole",
         }
     }
 }

@@ -62,6 +62,7 @@ const PLATFORMS: &[PlatformSpec] = &[
     PlatformSpec { name: "mastodon",       capacity: 112,    max_carriers: 20,  cost_microusd: 0,      cost_devnet: 0 },
     PlatformSpec { name: "bluesky",        capacity: 60,     max_carriers: 20,  cost_microusd: 0,      cost_devnet: 0 },
     PlatformSpec { name: "eth-sepolia",    capacity: 10240,  max_carriers: 50,  cost_microusd: 500000, cost_devnet: 0 },
+    PlatformSpec { name: "wormhole-vaa",  capacity: 30000,  max_carriers: 20,  cost_microusd: 10000,  cost_devnet: 0 },
 ];
 
 struct FileEntry {
