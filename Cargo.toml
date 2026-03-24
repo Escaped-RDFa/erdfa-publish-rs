@@ -49,3 +49,7 @@ path = "src/bin/benchmark.rs"
 [[bin]]
 name = "campaign-planner"
 path = "src/bin/campaign_planner.rs"
+
+[[bin]]
+name = "stego-gossip"
+path = "src/bin/stego_gossip.rs"
