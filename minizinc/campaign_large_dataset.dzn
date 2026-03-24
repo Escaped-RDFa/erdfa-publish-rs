@@ -1,0 +1,16 @@
+% Campaign: Large Dataset (102400 bytes = 100KB)
+% Use case: Full document archive, image set, model weights
+% Strategy: Heavy blockchain + NFT tiles, social for redundancy headers
+
+payload_bytes = 102400;
+ecc_mode = 1;           % Hamming — lighter overhead for bulk data
+redundancy_factor = 1;  % 1× (rely on platform durability)
+max_shards_total = 100;
+
+num_platforms = 8;
+
+platform_name = ["tweet280", "discord", "instagram", "tiktok", "solana-memo", "mastodon", "nft-tile", "solana-account"];
+capacity     = [55,         972,       537,         537,       558,           112,        196600,     10240];
+max_carriers = [20,         10,        10,          10,        20,            10,         3,          10];
+cost_microusd = [0,         0,         0,           0,         10000,         0,          50000,      70000];
+% solana-account: 10KB rent-exempt ~$0.07 = 70000 µ$

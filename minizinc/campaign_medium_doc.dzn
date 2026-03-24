@@ -1,0 +1,16 @@
+% Campaign: Medium Document (4096 bytes)
+% Use case: Signed manifest, small contract, config blob
+% Strategy: Mix of social + blockchain for durability
+
+payload_bytes = 4096;
+ecc_mode = 2;           % Golay
+redundancy_factor = 1;  % 1× (ECC alone provides correction)
+max_shards_total = 50;
+
+num_platforms = 8;
+
+platform_name = ["tweet280", "discord", "instagram", "tiktok", "solana-memo", "mastodon", "bluesky", "nft-tile"];
+capacity     = [55,         972,       537,         537,       558,           112,        60,        196600];
+max_carriers = [20,         5,         5,           5,         15,            10,         10,        1];
+cost_microusd = [0,         0,         0,           0,         10000,         0,          0,         50000];
+% NFT tile mint ~$0.05 = 50000 µ$
