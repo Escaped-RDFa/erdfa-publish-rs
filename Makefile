@@ -52,3 +52,43 @@ perf:
 # usage: make agda DIR=./shards [OUT=PerfHistory.agda] [MODULE=PerfHistory]
 agda:
 	nix run -- agda --dir $(DIR) $(if $(OUT),--out $(OUT)) $(if $(MODULE),--module $(MODULE))
+
+# ── solfunmeme-service ──────────────────────────────────────────
+
+.PHONY: sf-build sf-serve sf-crawl sf-status sf-stop sf-logs sf-timer sf-hf-push
+
+BIN := target/release/solfunmeme-service
+BUDGET ?= 95000
+RATE ?= 8
+
+sf-build:
+	nix develop -c cargo build --release --bin solfunmeme-service
+
+sf-serve:
+	systemctl --user restart solfunmeme-service
+	systemctl --user status solfunmeme-service --no-pager
+
+sf-stop:
+	systemctl --user stop solfunmeme-service
+
+sf-status:
+	@systemctl --user status solfunmeme-service --no-pager 2>/dev/null || true
+	@systemctl --user status solfunmeme-crawl.timer --no-pager 2>/dev/null || true
+	@curl -s http://127.0.0.1:7780/status 2>/dev/null || echo "service not running"
+
+sf-crawl:
+	$(BIN) batch-crawl --budget $(BUDGET) --rate $(RATE)
+
+sf-crawl-systemd:
+	systemctl --user start solfunmeme-crawl.service
+	journalctl --user -u solfunmeme-crawl -f --no-pager
+
+sf-timer:
+	systemctl --user enable --now solfunmeme-crawl.timer
+	systemctl --user list-timers --no-pager | grep solfunmeme
+
+sf-logs:
+	journalctl --user -u solfunmeme-service -u solfunmeme-crawl -f --no-pager
+
+sf-hf-push:
+	cd ~/.solfunmeme/hf-dataset && git add -A && git commit -m "batch-crawl update $$(date -I)" && git push

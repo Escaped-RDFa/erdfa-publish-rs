@@ -49,6 +49,18 @@ enum Cmd {
     },
     /// Show current state
     Status,
+    /// Analyze cached tx → holder balances → Fibonacci tiers → completeness proof
+    Analyze {
+        /// HF dataset directory with getTransaction JSON files
+        #[arg(long, default_value = "~/.solfunmeme/hf-dataset")]
+        hf_dir: String,
+        /// Time block size in seconds (default 1 day = 86400)
+        #[arg(long, default_value = "86400")]
+        block_secs: i64,
+        /// Output directory for proof artifacts
+        #[arg(long, default_value = "~/.solfunmeme/proofs")]
+        out_dir: String,
+    },
     /// Batch-crawl: fetch missing tx details from HF dataset sigs (daily systemd timer)
     BatchCrawl {
         /// HF dataset directory with getSignaturesForAddress JSON files
@@ -71,6 +83,34 @@ fn expand_dir(s: &str) -> PathBuf {
     } else {
         PathBuf::from(s)
     }
+}
+
+/// Extract {owner → amount} from preTokenBalances/postTokenBalances for a given mint
+#[cfg(feature = "native")]
+fn token_balances(arr: Option<&serde_json::Value>, mint: &str) -> std::collections::HashMap<String, i128> {
+    let mut map = std::collections::HashMap::new();
+    if let Some(serde_json::Value::Array(items)) = arr {
+        for item in items {
+            if item["mint"].as_str() == Some(mint) {
+                if let (Some(owner), Some(amount)) = (
+                    item["owner"].as_str(),
+                    item["uiTokenAmount"]["amount"].as_str(),
+                ) {
+                    if let Ok(amt) = amount.parse::<i128>() {
+                        map.insert(owner.to_string(), amt);
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+#[cfg(feature = "native")]
+fn chrono_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    format!("{}", secs)
 }
 
 #[cfg(feature = "native")]
@@ -255,6 +295,232 @@ fn main() {
                     }
                 }
                 None => eprintln!("No state yet — run 'crawl' first"),
+            }
+        }
+
+        Cmd::Analyze { hf_dir, block_secs, out_dir } => {
+            let hf = expand_dir(&hf_dir);
+            let out = expand_dir(&out_dir);
+            std::fs::create_dir_all(&out).ok();
+
+            // 1. Parse all tx files → extract token balance changes
+            eprintln!("◎ analyze: scanning tx files in {}", hf.display());
+            let mint = TOKEN_CA;
+
+            // BalanceChange: (slot, blockTime, owner, delta)
+            let mut changes: Vec<(u64, i64, String, i128)> = Vec::new();
+            let mut tx_count = 0usize;
+            let mut relevant = 0usize;
+            let mut errors = 0usize;
+            let mut all_sigs: Vec<String> = Vec::new();
+
+            for entry in std::fs::read_dir(&hf).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.starts_with("method_getTransaction_") { continue; }
+                tx_count += 1;
+
+                // Extract sig from filename
+                if let Some(rest) = name.strip_prefix("method_getTransaction_signature_") {
+                    if let Some(sig) = rest.rsplit_once('_').map(|(s,_)| s) {
+                        all_sigs.push(sig.to_string());
+                    }
+                }
+
+                let Ok(data) = std::fs::read(entry.path()) else { errors += 1; continue };
+                let Ok(v): Result<serde_json::Value, _> = serde_json::from_slice(&data) else { errors += 1; continue };
+                let Some(result) = v.get("result") else { errors += 1; continue };
+                let slot = result["slot"].as_u64().unwrap_or(0);
+                let block_time = result["blockTime"].as_i64().unwrap_or(0);
+                let meta = &result["meta"];
+
+                // Extract pre/post token balances for our mint
+                let pre = token_balances(meta.get("preTokenBalances"), mint);
+                let post = token_balances(meta.get("postTokenBalances"), mint);
+
+                let all_owners: std::collections::HashSet<&str> =
+                    pre.keys().chain(post.keys()).map(|s| s.as_str()).collect();
+
+                let mut has_change = false;
+                for owner in all_owners {
+                    let pre_amt = pre.get(owner).copied().unwrap_or(0);
+                    let post_amt = post.get(owner).copied().unwrap_or(0);
+                    let delta = post_amt - pre_amt;
+                    if delta != 0 {
+                        changes.push((slot, block_time, owner.to_string(), delta));
+                        has_change = true;
+                    }
+                }
+                if has_change { relevant += 1; }
+
+                if tx_count % 5000 == 0 {
+                    eprintln!("  [{}/...] relevant={} changes={}", tx_count, relevant, changes.len());
+                }
+            }
+
+            eprintln!("  {} tx files, {} relevant, {} balance changes, {} errors",
+                tx_count, relevant, changes.len(), errors);
+
+            // 2. Sort by slot (time-ordered)
+            changes.sort_by_key(|c| (c.0, c.2.clone()));
+
+            // 3. Compute running balances and tier snapshots per time block
+            let mut balances: std::collections::HashMap<String, i128> = std::collections::HashMap::new();
+            let mut total_inflow: i128 = 0;
+            let mut total_outflow: i128 = 0;
+            let mut actors: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut block_snapshots: Vec<serde_json::Value> = Vec::new();
+
+            let tiers = fibonacci_tiers();
+            let mut current_block_time: i64 = 0;
+
+            for (slot, bt, owner, delta) in &changes {
+                actors.insert(owner.clone());
+                *balances.entry(owner.clone()).or_insert(0) += delta;
+                if *delta > 0 { total_inflow += delta; }
+                else { total_outflow += delta.abs(); }
+
+                // Snapshot at block boundaries
+                if current_block_time == 0 { current_block_time = *bt; }
+                if *bt >= current_block_time + block_secs || *slot == changes.last().map(|c| c.0).unwrap_or(0) {
+                    // Sort holders by balance descending
+                    let mut ranked: Vec<(&String, &i128)> = balances.iter()
+                        .filter(|(_, b)| **b > 0)
+                        .collect();
+                    ranked.sort_by(|a, b| b.1.cmp(a.1));
+
+                    // Build tier assignments
+                    let mut tier_groups: Vec<serde_json::Value> = Vec::new();
+                    for (tier_name, boundary) in &tiers {
+                        let start = if tier_groups.is_empty() { 0 } else {
+                            tiers.iter()
+                                .take_while(|(n,_)| n != tier_name)
+                                .last()
+                                .map(|(_,b)| *b)
+                                .unwrap_or(0)
+                        };
+                        let members: Vec<serde_json::Value> = ranked.iter()
+                            .skip(start).take(boundary - start)
+                            .map(|(addr, bal)| serde_json::json!({
+                                "address": addr, "balance": bal.to_string()
+                            }))
+                            .collect();
+                        tier_groups.push(serde_json::json!({
+                            "tier": tier_name,
+                            "boundary": boundary,
+                            "count": members.len(),
+                            "members": members,
+                        }));
+                    }
+                    // Community tier (everyone else)
+                    let last_boundary = tiers.last().map(|(_,b)| *b).unwrap_or(0);
+                    let community: Vec<serde_json::Value> = ranked.iter()
+                        .skip(last_boundary)
+                        .map(|(addr, bal)| serde_json::json!({
+                            "address": addr, "balance": bal.to_string()
+                        }))
+                        .collect();
+                    tier_groups.push(serde_json::json!({
+                        "tier": "community",
+                        "boundary": "∞",
+                        "count": community.len(),
+                        "members": community,
+                    }));
+
+                    block_snapshots.push(serde_json::json!({
+                        "block_time": current_block_time,
+                        "slot": slot,
+                        "total_holders": ranked.len(),
+                        "total_actors": actors.len(),
+                        "tiers": tier_groups,
+                    }));
+
+                    current_block_time = *bt;
+                }
+            }
+
+            // 4. Completeness proof
+            // Collect all sigs from getSignaturesForAddress files
+            let mut dataset_sigs: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for entry in std::fs::read_dir(&hf).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.starts_with("method_getSignaturesForAddress_") { continue; }
+                let Ok(data) = std::fs::read(entry.path()) else { continue };
+                let Ok(v): Result<serde_json::Value, _> = serde_json::from_slice(&data) else { continue };
+                if let Some(arr) = v["result"].as_array() {
+                    for item in arr {
+                        if let Some(sig) = item["signature"].as_str() {
+                            dataset_sigs.insert(sig.to_string());
+                        }
+                    }
+                }
+            }
+
+            let analyzed_sigs: std::collections::HashSet<String> = all_sigs.into_iter().collect();
+            let missing: Vec<&String> = dataset_sigs.iter()
+                .filter(|s| !analyzed_sigs.contains(s.as_str()))
+                .take(100)
+                .collect();
+
+            let net_balance: i128 = balances.values().sum();
+
+            let proof = serde_json::json!({
+                "proof_type": "federal_model_completeness",
+                "token_mint": mint,
+                "generated_at": chrono_timestamp(),
+                "coverage": {
+                    "total_sigs_in_dataset": dataset_sigs.len(),
+                    "tx_files_analyzed": tx_count,
+                    "tx_with_token_changes": relevant,
+                    "coverage_pct": if dataset_sigs.is_empty() { 0.0 }
+                        else { (tx_count as f64 / dataset_sigs.len() as f64) * 100.0 },
+                    "missing_sample": missing,
+                },
+                "conservation": {
+                    "total_inflow": total_inflow.to_string(),
+                    "total_outflow": total_outflow.to_string(),
+                    "net_balance": net_balance.to_string(),
+                    "inflow_equals_outflow": total_inflow == total_outflow,
+                },
+                "actors": {
+                    "total_unique_actors": actors.len(),
+                    "holders_with_positive_balance": balances.values().filter(|b| **b > 0).count(),
+                    "holders_with_zero_balance": balances.values().filter(|b| **b == 0).count(),
+                },
+                "tiers": fibonacci_tiers().iter().map(|(n,b)| serde_json::json!({"name": n, "boundary": b})).collect::<Vec<_>>(),
+                "block_snapshots": block_snapshots.len(),
+            });
+
+            // 5. Write outputs
+            let proof_path = out.join("completeness_proof.json");
+            std::fs::write(&proof_path, serde_json::to_string_pretty(&proof).unwrap()).unwrap();
+            eprintln!("◎ Wrote {}", proof_path.display());
+
+            let snapshots_path = out.join("tier_snapshots.json");
+            std::fs::write(&snapshots_path, serde_json::to_string_pretty(&block_snapshots).unwrap()).unwrap();
+            eprintln!("◎ Wrote {} ({} blocks)", snapshots_path.display(), block_snapshots.len());
+
+            // Summary to stderr
+            eprintln!("\n◎ Federal Model Analysis Complete");
+            eprintln!("  TX analyzed:    {}/{} ({:.1}% coverage)",
+                tx_count, dataset_sigs.len(),
+                if dataset_sigs.is_empty() { 0.0 } else { (tx_count as f64 / dataset_sigs.len() as f64) * 100.0 });
+            eprintln!("  Token changes:  {} txns, {} balance changes", relevant, changes.len());
+            eprintln!("  Actors:         {} unique addresses", actors.len());
+            eprintln!("  Holders:        {} with positive balance", balances.values().filter(|b| **b > 0).count());
+            eprintln!("  Conservation:   inflow={} outflow={} net={}",
+                total_inflow, total_outflow, net_balance);
+            eprintln!("  Time blocks:    {} snapshots", block_snapshots.len());
+
+            // Print top 10 holders
+            let mut top: Vec<_> = balances.iter().filter(|(_,b)| **b > 0).collect();
+            top.sort_by(|a,b| b.1.cmp(a.1));
+            eprintln!("\n  Top 10 holders:");
+            for (i, (addr, bal)) in top.iter().take(10).enumerate() {
+                let tier = tiers.iter()
+                    .find(|(_, boundary)| i < *boundary)
+                    .map(|(name, _)| name.as_str())
+                    .unwrap_or("community");
+                eprintln!("    #{:<3} {} {:>20} [{}]", i+1, &addr[..16], bal, tier);
             }
         }
 
