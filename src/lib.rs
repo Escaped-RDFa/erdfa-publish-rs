@@ -4,6 +4,7 @@ use std::io::Write;
 
 pub mod render;
 pub mod cft;
+pub mod privacy;
 
 /// DA51 CBOR tag (0xDA51 = 55889)
 const DASL_TAG: u64 = 55889;

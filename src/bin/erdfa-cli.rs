@@ -123,6 +123,45 @@ enum Cmd {
         #[arg(long, default_value = "PerfHistory")]
         module: String,
     },
+    /// Privacy operations: commit, reveal, verify shard fields
+    Privacy {
+        #[command(subcommand)]
+        action: PrivacyAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PrivacyAction {
+    /// Commit a shard: create PrivacyShard with Merkle tree, redact specified fields
+    Commit {
+        /// Input .cbor shard file
+        #[arg(long)]
+        file: PathBuf,
+        /// Comma-separated field keys to redact
+        #[arg(long, default_value = "ip,samples,count,pct,cmdline,source")]
+        redact: String,
+        /// Output directory (default: same dir as input)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Reveal a field from a PrivacyShard (requires original shard for proof)
+    Reveal {
+        /// Original .cbor shard (with all values)
+        #[arg(long)]
+        original: PathBuf,
+        /// Field key to reveal
+        #[arg(long)]
+        field: String,
+    },
+    /// Verify a PrivacyShard's Merkle root against an original shard
+    Verify {
+        /// Private .priv.cbor shard
+        #[arg(long)]
+        file: PathBuf,
+        /// Original .cbor shard (optional — if provided, checks field commitments)
+        #[arg(long)]
+        original: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -139,6 +178,7 @@ fn main() {
         Cmd::Experiment { dir, id, weights, topo, steps, hypothesis } =>
             cmd_experiment(&dir, &id, &weights, &topo, steps, &hypothesis),
         Cmd::Agda { dir, out, module } => cmd_agda(&dir, &out, &module),
+        Cmd::Privacy { action } => cmd_privacy(action),
     }
 }
 
@@ -846,5 +886,89 @@ fn cbor_to_agda(val: &ciborium::Value, depth: usize) -> String {
         Null => "(ctext \"null\")".into(),
         Float(f) => format!("(cnat {})", *f as u64),
         _ => "(ctext \"?\")".into(),
+    }
+}
+
+// ── Privacy commands ────────────────────────────────────────────
+
+fn cmd_privacy(action: PrivacyAction) {
+    use erdfa_publish::privacy::{PrivacyShard, MerkleTree};
+
+    match action {
+        PrivacyAction::Commit { file, redact, out } => {
+            let bytes = fs::read(&file).expect("read shard");
+            let shard = decode_shard(&bytes).expect("decode shard");
+            let pairs = match &shard.component {
+                Component::KeyValue { pairs } => pairs.clone(),
+                _ => { eprintln!("only KeyValue shards supported"); return; }
+            };
+            let redact_keys: Vec<&str> = redact.split(',').map(|s| s.trim()).collect();
+            let mut ps = PrivacyShard::from_pairs(&shard.id, &pairs, shard.tags.clone());
+            ps.redact(&redact_keys);
+            let out_dir = out.unwrap_or_else(|| file.parent().unwrap_or(&PathBuf::from(".")).to_path_buf());
+            let out_path = out_dir.join(format!("{}.priv.cbor", shard.id));
+            fs::create_dir_all(&out_dir).ok();
+            fs::write(&out_path, ps.to_cbor()).expect("write");
+            let redacted = ps.fields.iter().filter(|f| matches!(f, erdfa_publish::privacy::PrivacyField::Redacted { .. })).count();
+            eprintln!("committed {} → {} ({} fields, {} redacted, root={}..)",
+                file.display(), out_path.display(), ps.fields.len(), redacted, &ps.merkle_root[..16]);
+        }
+        PrivacyAction::Reveal { original, field } => {
+            let bytes = fs::read(&original).expect("read shard");
+            let shard = decode_shard(&bytes).expect("decode shard");
+            let pairs = match &shard.component {
+                Component::KeyValue { pairs } => pairs.clone(),
+                _ => { eprintln!("only KeyValue shards supported"); return; }
+            };
+            let idx = pairs.iter().position(|(k, _)| k == &field);
+            match idx {
+                Some(i) => {
+                    let ps = PrivacyShard::from_pairs(&shard.id, &pairs, shard.tags.clone());
+                    let proof = ps.prove_field(&pairs, i).expect("prove");
+                    let valid = MerkleTree::verify(&proof);
+                    println!("field: {} = {}", field, pairs[i].1);
+                    println!("merkle_root: {}", ps.merkle_root);
+                    println!("proof_valid: {}", valid);
+                    println!("proof_path_len: {}", proof.path.len());
+                }
+                None => eprintln!("field '{}' not found", field),
+            }
+        }
+        PrivacyAction::Verify { file, original } => {
+            let bytes = fs::read(&file).expect("read private shard");
+            // Decode PrivacyShard from DA51-tagged CBOR
+            let data = if bytes.len() > 2 && bytes[0] == 0xD9 && bytes[1] == 0xDA && bytes[2] == 0x51 {
+                &bytes[3..]
+            } else { &bytes };
+            let ps: PrivacyShard = match ciborium::from_reader(data) {
+                Ok(v) => v,
+                Err(e) => { eprintln!("decode error: {}", e); return; }
+            };
+            let redacted = ps.fields.iter().filter(|f| matches!(f, erdfa_publish::privacy::PrivacyField::Redacted { .. })).count();
+            let revealed = ps.fields.len() - redacted;
+            println!("id: {}", ps.id);
+            println!("merkle_root: {}", ps.merkle_root);
+            println!("fields: {} ({} revealed, {} redacted)", ps.fields.len(), revealed, redacted);
+            for f in &ps.fields {
+                match f {
+                    erdfa_publish::privacy::PrivacyField::Revealed { key, value } =>
+                        println!("  ✅ {} = {}", key, value),
+                    erdfa_publish::privacy::PrivacyField::Redacted { key, commitment } =>
+                        println!("  🔒 {} [{}..] ", key, &commitment[..16]),
+                }
+            }
+            if let Some(orig_path) = original {
+                let orig_bytes = fs::read(&orig_path).expect("read original");
+                let orig_shard = decode_shard(&orig_bytes).expect("decode original");
+                if let Component::KeyValue { pairs } = &orig_shard.component {
+                    let rebuilt = PrivacyShard::from_pairs(&orig_shard.id, pairs, orig_shard.tags.clone());
+                    if rebuilt.merkle_root == ps.merkle_root {
+                        println!("\n✅ Merkle root matches original shard");
+                    } else {
+                        println!("\n❌ Merkle root MISMATCH — shard was tampered");
+                    }
+                }
+            }
+        }
     }
 }
