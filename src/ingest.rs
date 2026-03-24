@@ -134,7 +134,7 @@ fn shellexpand(p: &str) -> String {
 
 /// JSON-RPC POST helper.
 #[cfg(feature = "native")]
-fn rpc_post(url: &str, method: &str, params: &serde_json::Value) -> Option<serde_json::Value> {
+pub fn rpc_post(url: &str, method: &str, params: &serde_json::Value) -> Option<serde_json::Value> {
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
     let resp = ureq::post(url)
         .set("Content-Type", "application/json")

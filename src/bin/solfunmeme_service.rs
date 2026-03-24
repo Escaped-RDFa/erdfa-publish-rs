@@ -49,6 +49,15 @@ enum Cmd {
     },
     /// Show current state
     Status,
+    /// Identify holders: classify as wallet/program/token-account/closed via getAccountInfo
+    Identify {
+        /// Proofs directory (reads tier_snapshots.json, writes holder_identities.json)
+        #[arg(long, default_value = "~/.solfunmeme/proofs")]
+        proofs_dir: String,
+        /// Requests per second
+        #[arg(long, default_value = "8")]
+        rate: usize,
+    },
     /// Analyze cached tx → holder balances → Fibonacci tiers → completeness proof
     Analyze {
         /// HF dataset directory with getTransaction JSON files
@@ -296,6 +305,126 @@ fn main() {
                 }
                 None => eprintln!("No state yet — run 'crawl' first"),
             }
+        }
+
+        Cmd::Identify { proofs_dir, rate } => {
+            let dir = expand_dir(&proofs_dir);
+            let snap_path = dir.join("tier_snapshots.json");
+            if !snap_path.exists() {
+                eprintln!("No tier_snapshots.json — run 'analyze' first");
+                return;
+            }
+
+            // Load last snapshot's addresses
+            let data = std::fs::read_to_string(&snap_path).unwrap();
+            let snaps: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
+            let last = snaps.last().unwrap();
+            let mut addrs: Vec<(String, String, String)> = Vec::new(); // (addr, tier, balance)
+            for tier in last["tiers"].as_array().unwrap() {
+                let tier_name = tier["tier"].as_str().unwrap_or("?");
+                for m in tier["members"].as_array().unwrap_or(&vec![]) {
+                    addrs.push((
+                        m["address"].as_str().unwrap_or("").to_string(),
+                        tier_name.to_string(),
+                        m["balance"].as_str().unwrap_or("0").to_string(),
+                    ));
+                }
+            }
+            eprintln!("◎ identify: {} holders to classify", addrs.len());
+
+            // Known program owners
+            let known_programs: std::collections::HashMap<&str, &str> = [
+                ("11111111111111111111111111111111", "system"),
+                ("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "spl-token"),
+                ("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", "token-2022"),
+                ("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "ata"),
+                ("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", "meteora-dlmm"),
+                ("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc", "orca-whirlpool"),
+                ("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", "raydium-amm"),
+                ("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK", "raydium-clmm"),
+                ("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pump-fun"),
+                ("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", "jupiter-v6"),
+                ("BPFLoaderUpgradeab1e11111111111111111111111", "bpf-upgradeable"),
+                ("BPFLoader2111111111111111111111111111111111", "bpf-loader"),
+            ].into_iter().collect();
+
+            let rpc = rpc_url(&args.rpc);
+            let mut results: Vec<serde_json::Value> = Vec::new();
+            let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let start = std::time::Instant::now();
+
+            for (i, (addr, tier, balance)) in addrs.iter().enumerate() {
+                let kind;
+                let mut owner_label = String::new();
+                let mut sol_balance = 0.0f64;
+
+                let resp = rpc_post(&rpc, "getAccountInfo",
+                    &serde_json::json!([addr, {"encoding": "jsonParsed"}]));
+
+                match resp.and_then(|v: serde_json::Value| v["result"]["value"].as_object().cloned()) {
+                    None => {
+                        kind = "closed";
+                    }
+                    Some(val) => {
+                        let val = serde_json::Value::Object(val);
+                        let exe = val["executable"].as_bool().unwrap_or(false);
+                        let owner = val["owner"].as_str().unwrap_or("");
+                        sol_balance = val["lamports"].as_f64().unwrap_or(0.0) / 1e9;
+
+                        if exe {
+                            kind = "program";
+                            owner_label = known_programs.get(owner)
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| format!("program:{}", &owner[..16.min(owner.len())]));
+                        } else if owner == "11111111111111111111111111111111" {
+                            kind = "wallet";
+                        } else if let Some(label) = known_programs.get(owner) {
+                            kind = "contract_account";
+                            owner_label = label.to_string();
+                        } else {
+                            kind = "contract_account";
+                            owner_label = format!("unknown:{}", &owner[..16.min(owner.len())]);
+                        }
+                    }
+                }
+
+                *counts.entry(kind.to_string()).or_insert(0) += 1;
+
+                results.push(serde_json::json!({
+                    "address": addr,
+                    "tier": tier,
+                    "token_balance": balance,
+                    "kind": kind,
+                    "owner_label": owner_label,
+                    "sol_balance": sol_balance,
+                }));
+
+                if (i + 1) % rate == 0 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                if (i + 1) % 200 == 0 {
+                    let elapsed = start.elapsed().as_secs_f64();
+                    eprintln!("  [{}/{}] {:.1}/s {:?}", i + 1, addrs.len(), (i+1) as f64 / elapsed, counts);
+                }
+            }
+
+            let elapsed = start.elapsed().as_secs_f64();
+
+            let output = serde_json::json!({
+                "generated_at": chrono_timestamp(),
+                "total_holders": results.len(),
+                "classification": counts,
+                "holders": results,
+            });
+
+            let out_path = dir.join("holder_identities.json");
+            std::fs::write(&out_path, serde_json::to_string_pretty(&output).unwrap()).unwrap();
+
+            eprintln!("\n◎ Holder Classification Complete ({:.1}s)", elapsed);
+            for (kind, count) in &counts {
+                eprintln!("  {:20} {}", kind, count);
+            }
+            eprintln!("◎ Wrote {}", out_path.display());
         }
 
         Cmd::Analyze { hf_dir, block_secs, out_dir } => {
