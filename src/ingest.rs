@@ -82,11 +82,13 @@ impl IngestState {
         }
     }
 
+    #[cfg(feature = "native")]
     pub fn save(&self, path: &Path) {
         let json = serde_json::to_string_pretty(self).expect("serialize state");
         std::fs::write(path, json).expect("write state");
     }
 
+    #[cfg(feature = "native")]
     pub fn load(path: &Path) -> Option<Self> {
         let data = std::fs::read(path).ok()?;
         serde_json::from_slice(&data).ok()
@@ -110,7 +112,10 @@ pub struct SignaturesResponse {
 
 // ── Solana RPC crawler ──────────────────────────────────────────
 
+// ── Solana RPC crawler (native only) ────────────────────────────
+
 /// Read RPC URL: prefer ~/.helius key → Helius mainnet, else use provided rpc.
+#[cfg(feature = "native")]
 pub fn rpc_url(rpc: &str) -> String {
     let binding = shellexpand("~/.helius");
     let helius = std::path::Path::new(&binding);
@@ -123,6 +128,7 @@ pub fn rpc_url(rpc: &str) -> String {
     rpc.to_string()
 }
 
+#[cfg(feature = "native")]
 fn shellexpand(p: &str) -> String {
     if p.starts_with("~/") {
         if let Some(home) = std::env::var_os("HOME") {
@@ -225,6 +231,7 @@ pub fn cache_tx(cache_dir: &Path, sig: &str, rpc: &str) -> bool {
 }
 
 /// Full crawl: fetch sigs for all seed addresses, then expand to interacting addresses.
+#[cfg(feature = "native")]
 pub fn crawl(state: &mut IngestState, depth: usize) {
     let mut to_crawl: Vec<String> = state.seed_addresses.clone();
     let mut seen_sigs: std::collections::HashSet<String> = 
@@ -321,6 +328,7 @@ pub struct ClaimMetadata {
 
 /// Generate NFT tile series for each tier with layered stego encoding.
 /// Higher tiers get more data layers encoded in their tiles.
+#[cfg(feature = "native")]
 pub fn generate_nft_series(state: &IngestState, out_dir: &Path) {
     use crate::stego::{StegoPlugin, BitPlane6};
 
@@ -422,6 +430,7 @@ pub fn generate_nft_series(state: &IngestState, out_dir: &Path) {
 
 /// A pastebin entry: someone submits transaction data for team review.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg(feature = "native")]
 pub struct PastebinEntry {
     pub id: String,
     pub submitted_at: String,
@@ -439,6 +448,7 @@ pub enum PasteStatus {
     Rejected,
 }
 
+#[cfg(feature = "native")]
 impl PastebinEntry {
     pub fn new(content: String, submitter: Option<String>) -> Self {
         let hash = hex::encode(Sha256::digest(content.as_bytes()));
@@ -454,6 +464,7 @@ impl PastebinEntry {
     }
 }
 
+#[cfg(feature = "native")]
 fn chrono_now() -> String {
     // Use system time as ISO string
     let d = std::time::SystemTime::now()
@@ -462,10 +473,12 @@ fn chrono_now() -> String {
 }
 
 /// Pastebin store backed by a directory.
+#[cfg(feature = "native")]
 pub struct PastebinStore {
     pub dir: PathBuf,
 }
 
+#[cfg(feature = "native")]
 impl PastebinStore {
     pub fn new(dir: PathBuf) -> Self {
         std::fs::create_dir_all(&dir).expect("create pastebin dir");
