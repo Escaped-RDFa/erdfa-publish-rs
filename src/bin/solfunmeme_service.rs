@@ -58,6 +58,15 @@ enum Cmd {
         #[arg(long, default_value = "8")]
         rate: usize,
     },
+    /// Run Lean4 proof verification + mint NFT credentials + generate vote schedule
+    Prove {
+        /// Proofs directory
+        #[arg(long, default_value = "~/.solfunmeme/proofs")]
+        proofs_dir: String,
+        /// Path to solfunmeme-lean binary
+        #[arg(long, default_value = "")]
+        lean_bin: String,
+    },
     /// Analyze cached tx → holder balances → Fibonacci tiers → completeness proof
     Analyze {
         /// HF dataset directory with getTransaction JSON files
@@ -424,6 +433,129 @@ fn main() {
             for (kind, count) in &counts {
                 eprintln!("  {:20} {}", kind, count);
             }
+            eprintln!("◎ Wrote {}", out_path.display());
+        }
+
+        Cmd::Prove { proofs_dir, lean_bin } => {
+            let dir = expand_dir(&proofs_dir);
+            std::fs::create_dir_all(&dir).ok();
+
+            // 1. Find lean binary
+            let lean = if lean_bin.is_empty() {
+                // Search common locations
+                let candidates = [
+                    expand_dir("~/.solfunmeme/solfunmeme-lean"),
+                    std::path::PathBuf::from("/mnt/data1/meta-introspector/submodules/solfunmeme-introspector/.lake/build/bin/solfunmeme-lean"),
+                ];
+                candidates.into_iter().find(|p| p.exists())
+                    .unwrap_or_else(|| { eprintln!("solfunmeme-lean not found; run 'lake build' in solfunmeme-introspector"); std::process::exit(1); })
+            } else {
+                expand_dir(&lean_bin)
+            };
+
+            // 2. Run Lean4 proofs
+            eprintln!("◎ prove: running Lean4 verification...");
+            let output = std::process::Command::new(&lean).output();
+            match output {
+                Ok(o) => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    eprint!("{}", stdout);
+                    if !o.status.success() {
+                        eprintln!("✗ Lean4 verification FAILED");
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("✗ Failed to run {}: {}", lean.display(), e);
+                    std::process::exit(1);
+                }
+            }
+
+            // 3. Mint NFT credentials from holder_identities.json
+            let id_path = dir.join("holder_identities.json");
+            if !id_path.exists() {
+                eprintln!("No holder_identities.json — run 'identify' first");
+                return;
+            }
+
+            let data = std::fs::read_to_string(&id_path).unwrap();
+            let ids: serde_json::Value = serde_json::from_str(&data).unwrap();
+
+            let mut credentials: Vec<serde_json::Value> = Vec::new();
+            let day = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() / 86400;
+
+            for h in ids["holders"].as_array().unwrap_or(&vec![]) {
+                if h["kind"].as_str() != Some("wallet") { continue; }
+                let addr = h["address"].as_str().unwrap_or("");
+                let tier = h["tier"].as_str().unwrap_or("community");
+                let balance = h["token_balance"].as_str().unwrap_or("0");
+                let chamber = match tier {
+                    "diamond" => "senate",
+                    "gold" => "house",
+                    "silver" | "fib-3" | "fib-4" | "fib-5" => "lobby",
+                    _ => continue, // community doesn't get credentials
+                };
+                let min_balance: u64 = match chamber {
+                    "senate" => 1_000_000,
+                    "house" => 100_000,
+                    _ => 10_000,
+                };
+                let bal: u64 = balance.parse().unwrap_or(0);
+                if bal < min_balance { continue; }
+
+                credentials.push(serde_json::json!({
+                    "holder": addr,
+                    "chamber": chamber,
+                    "tier": tier,
+                    "balance": balance,
+                    "snapshot_day": day,
+                    "min_balance": min_balance,
+                    "credential_hash": format!("{:x}", {
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+                        let mut h = DefaultHasher::new();
+                        addr.hash(&mut h); chamber.hash(&mut h); day.hash(&mut h);
+                        h.finish()
+                    }),
+                }));
+            }
+
+            // 4. Generate vote schedule (next 7 days)
+            let mut schedule: Vec<serde_json::Value> = Vec::new();
+            for d in 0..7 {
+                schedule.push(serde_json::json!({
+                    "day": day + d,
+                    "bill_deadline_slot": (day + d) * 216000 + 216000, // ~1 day in slots
+                    "status": if d == 0 { "open" } else { "pending" },
+                }));
+            }
+
+            let output = serde_json::json!({
+                "generated_at": chrono_timestamp(),
+                "lean4_verified": true,
+                "snapshot_day": day,
+                "credentials": {
+                    "total": credentials.len(),
+                    "senate": credentials.iter().filter(|c| c["chamber"] == "senate").count(),
+                    "house": credentials.iter().filter(|c| c["chamber"] == "house").count(),
+                    "lobby": credentials.iter().filter(|c| c["chamber"] == "lobby").count(),
+                },
+                "credential_list": credentials,
+                "vote_schedule": schedule,
+            });
+
+            let out_path = dir.join("credentials.json");
+            std::fs::write(&out_path, serde_json::to_string_pretty(&output).unwrap()).unwrap();
+
+            eprintln!("\n◎ Proof + Credentials Complete");
+            eprintln!("  Lean4 verified: ✓");
+            eprintln!("  Credentials minted: {} (senate={}, house={}, lobby={})",
+                credentials.len(),
+                credentials.iter().filter(|c| c["chamber"] == "senate").count(),
+                credentials.iter().filter(|c| c["chamber"] == "house").count(),
+                credentials.iter().filter(|c| c["chamber"] == "lobby").count());
+            eprintln!("  Vote schedule: 7 days");
             eprintln!("◎ Wrote {}", out_path.display());
         }
 

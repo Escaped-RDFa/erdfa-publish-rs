@@ -92,3 +92,15 @@ sf-logs:
 
 sf-hf-push:
 	cd ~/.solfunmeme/hf-dataset && git add -A && git commit -m "batch-crawl update $$(date -I)" && git push
+
+# ── Prove + credentials ──────────────────────────────────────────
+
+sf-prove:
+	$(BIN) prove
+
+sf-prove-systemd:
+	systemctl --user start solfunmeme-prove.service
+	journalctl --user -u solfunmeme-prove -f --no-pager
+
+sf-prove-timer:
+	systemctl --user enable --now solfunmeme-prove.timer
