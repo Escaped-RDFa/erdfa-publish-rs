@@ -159,6 +159,37 @@ output.tar
 └── manifest.cbor          # DA51-tagged ShardSet
 ```
 
+## Promoted manifests
+
+`ShardSet` stays as the thin manifest for existing shard bundles. `PromotedShardSet` adds the richer catalog fields needed when a publisher needs artifact provenance, per-shard encoding/size metadata, sink refs, and routing hints without changing shard payloads.
+
+```rust
+use erdfa_publish::*;
+
+let shard = Shard::new("left-001", Component::Paragraph { text: "hello".into() })
+    .with_tags(vec!["demo".into()]);
+
+let promoted = shard
+    .promoted_ref()
+    .with_logical_kind("route-bucket")
+    .with_object_refs(vec![ObjectRef {
+        sink: "hf".into(),
+        uri: "hf://datasets/demo/left-001.cbor".into(),
+        size_bytes: 128,
+        content_digest: "sha256:deadbeef".into(),
+    }])
+    .with_routing_keys(vec!["route-left-node=Q123".into()]);
+
+let mut manifest = PromotedShardSet::new(
+    "demo",
+    "artifact-demo",
+    "rev-a",
+    "erdfa-shard-set",
+    "2026-03-29T00:00:00Z",
+);
+manifest.add_ref(promoted);
+```
+
 ## Rendering
 
 Shards are semantic, not visual. A loader fetches shards by CID, reads the `type` field, and delegates to the active a11y layer:
