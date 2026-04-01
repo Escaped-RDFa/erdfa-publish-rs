@@ -110,3 +110,23 @@ sf-collect:
 
 sf-pipeline:
 	$(BIN) analyze && $(BIN) identify && $(BIN) prove && $(BIN) collect-votes
+
+# ── CLI ───────────────────────────────────────────────────────────
+
+sf-cli-build:
+	nix develop -c cargo build --release --bin solfunmeme_cli
+
+sf-cli-install:
+	cp target/release/solfunmeme_cli ~/.local/bin/solfunmeme-cli
+	@echo "✓ Installed to ~/.local/bin/solfunmeme-cli"
+
+# ── git-index ─────────────────────────────────────────────────────
+
+git-index-build:
+	nix build
+
+git-index-install: git-index-build
+	cp -f result/bin/git-index ~/bin/
+
+git-index-run: git-index-install
+	git-index ~/git ~/03-march/29/git-index/data --depth 2
