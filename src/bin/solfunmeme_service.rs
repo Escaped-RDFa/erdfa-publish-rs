@@ -44,7 +44,7 @@ enum Cmd {
     Encode,
     /// Run HTTP server for pastebin + claim
     Serve {
-        #[arg(long, default_value = "0.0.0.0:7780")]
+        #[arg(long, default_value = "127.0.0.1:7780")]
         bind: String,
     },
     /// Show current state
