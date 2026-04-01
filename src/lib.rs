@@ -11,12 +11,30 @@ pub mod stego;
 pub mod distribute;
 pub mod hecke;
 pub mod maass;
+pub mod publish;
 
 // Re-export for WASM consumers
 pub use stego::{StegoPlugin, StegoChain};
 pub use distribute::{DistributionPlan, DistributionTarget, Platform, AclTier, Ecc, IpfsManifest};
 pub use hecke::{HeckeEigenvalue, hecke_eigenvalue, hecke_shard, orbifold_coords, PRIMES_71};
 pub use maass::{MaassResult, find_shadow, torus_coord, orbifold, SSP};
+pub use publish::{
+    apply_sink_adapters,
+    build_local_artifact_bundle,
+    ArtifactBundle,
+    ContainerIndex,
+    ContainerMember,
+    FileSinkAdapter,
+    HfSinkAdapter,
+    HostedAcknowledgement,
+    IpfsSinkAdapter,
+    publish_hf_with_ack,
+    publish_ipfs_with_ack,
+    PublishOutcome,
+    PublishReceipt,
+    SinkAdapter,
+    write_publish_outcome_artifacts,
+};
 
 /// DA51 CBOR tag (0xDA51 = 55889)
 const DASL_TAG: u64 = 55889;

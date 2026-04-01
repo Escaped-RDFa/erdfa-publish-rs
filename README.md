@@ -190,6 +190,98 @@ let mut manifest = PromotedShardSet::new(
 manifest.add_ref(promoted);
 ```
 
+## Local publish workflow
+
+The publish substrate now includes an additive local workflow that keeps shard
+identity stable while attaching sink refs and receipts.
+
+```rust
+use erdfa_publish::{
+    apply_sink_adapters, build_local_artifact_bundle, Component, FileSinkAdapter,
+    HfSinkAdapter, HostedAcknowledgement, IpfsSinkAdapter, Shard,
+};
+
+let shards = vec![
+    Shard::new("left-bucket-001", Component::Paragraph { text: "left".into() }),
+    Shard::new("nodeOfName-en-017", Component::Paragraph { text: "tenant".into() }),
+];
+
+let bundle = build_local_artifact_bundle("artifact-demo", "rev-a", &shards);
+
+let file = FileSinkAdapter { output_root: std::env::temp_dir().join("erdfa-publish-local") };
+let hf = HfSinkAdapter { dataset_root: "hf://datasets/example/zelph".into() };
+let ipfs = IpfsSinkAdapter;
+
+let mut outcomes = apply_sink_adapters(&bundle, &[&file, &hf, &ipfs]).unwrap();
+let hf_receipt = HostedAcknowledgement {
+    sink: "hf".into(),
+    acknowledgement_id: "commit:deadbeef".into(),
+    locator_uri: outcomes["hf"].receipt.container_ref.uri.clone(),
+    verification_url: Some("https://huggingface.co/datasets/example/zelph/commit/deadbeef".into()),
+    content_digest: outcomes["hf"].receipt.container_ref.content_digest.clone(),
+    size_bytes: outcomes["hf"].receipt.container_ref.size_bytes,
+    verified: true,
+};
+let hf_outcome = outcomes.remove("hf").unwrap().bind_hosted_acknowledgement(hf_receipt).unwrap();
+assert!(hf_outcome.receipt.hosted_acknowledgement.is_some());
+assert!(outcomes["file"].receipt.sink_refs.len() == shards.len());
+```
+
+The workflow emits:
+
+- one promoted manifest with per-shard object refs
+- one container index with member paths and content digests
+- one receipt per sink containing artifact id/revision, shard refs, sink refs,
+  container ref, content digests, publish result, and optional hosted
+  acknowledgement
+
+HF and IPFS adapters in this crate are local-first projections that attach
+stable sink refs and receipts. They do not mutate shard semantics or claim
+remote publish acknowledgement by themselves. When an external uploader verifies
+an acknowledged commit or CID against the projected container ref, that hosted
+acknowledgement can be bound back into the native `PublishReceipt`.
+
+## Hosted publish workflow
+
+Under the native feature, the crate now also exposes bounded hosted helpers:
+
+- `publish_hf_with_ack(...)`
+- `publish_ipfs_with_ack(...)`
+
+These helpers:
+
+- project the normal publish outcome first
+- perform a live hosted upload and read-back verification
+- bind the resulting hosted acknowledgement back into the native
+  `PublishReceipt`
+- write first-class emitted artifacts for each sink:
+  - `manifest.json`
+  - `container-index.json`
+  - `receipt.json`
+
+Example:
+
+```bash
+ERDFA_HF_DATASET_ROOT=hf://datasets/chbwa/itir-zos-ack-probe \
+ERDFA_IPFS_API=http://127.0.0.1:5001 \
+ERDFA_IPFS_GATEWAY=http://127.0.0.1:8080 \
+ERDFA_PUBLISH_OUTPUT_ROOT=/tmp/erdfa-publish-hosted \
+cargo run --example publish_hosted
+```
+
+Current limitation:
+
+- HF hosted acknowledgement binds cleanly against the projected container URI
+- IPFS hosted acknowledgement currently binds at the container level only; the
+  per-shard IPFS refs remain projected values until the adapter is refactored
+  to emit real hosted shard refs instead of synthetic local `content_cid(...)`
+  placeholders
+
+Current blocker for always-on network integration tests: this repo does not own
+an unauthenticated public write surface for HF/IPFS, and gateway reachability
+is not deterministic in CI. The crate therefore validates deterministic local
+publish contracts and keeps remote acknowledgement out of scope.
+
 ## Rendering
 
 Shards are semantic, not visual. A loader fetches shards by CID, reads the `type` field, and delegates to the active a11y layer:
