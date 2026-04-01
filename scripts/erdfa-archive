@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# erdfa-archive — Reusable URL archival pipeline for erdfa-publish
+# Fetches URLs, witnesses (SHA-256 seal + orbifold), extracts bibliography,
+# imports into CBOR shards via erdfa-cli.
+#
+# Usage:
+#   erdfa-archive fetch   urls.txt  output_dir/   # fetch + witness
+#   erdfa-archive bib     output_dir/              # extract bibliography from fetched HTML
+#   erdfa-archive import  output_dir/              # import into CBOR shards
+#   erdfa-archive all     urls.txt  output_dir/    # full pipeline
+#
+# urls.txt format: one URL per line, # comments ok, optional KEY=URL
+
+set -euo pipefail
+
+ERDFA="${ERDFA_CLI:-$HOME/erdfa-publish/target/release/erdfa-cli}"
+CMD="${1:-help}"
+shift || true
+
+usage() {
+  echo "Usage: erdfa-archive {fetch|bib|import|all} [urls.txt] [output_dir]"
+  exit 1
+}
+
+seal_hash() {
+  local FILE="$1"
+  sha256sum "$FILE" | cut -d' ' -f1
+}
+
+orbifold_from_hash() {
+  local HASH="$1"
+  # Use python for reliable big-int mod arithmetic
+  python3 -c "
+v=int('$HASH'[:16],16)
+print(f'{v%71},{v%59},{v%47}')
+"
+}
+
+do_fetch() {
+  local URLFILE="$1"
+  local OUTDIR="$2"
+  local RAW="$OUTDIR/raw"
+  local MANIFEST="$OUTDIR/seal_manifest.jsonl"
+  mkdir -p "$RAW" "$RAW/html-refs"
+
+  > "$MANIFEST"
+
+  grep -v '^\s*#' "$URLFILE" | grep -v '^\s*$' | while IFS= read -r LINE; do
+    # Format: KEY=URL or just URL. Split on first = only.
+    if echo "$LINE" | grep -qP '^[A-Za-z0-9_]+=https?://'; then
+      KEY="${LINE%%=*}"
+      URL="${LINE#*=}"
+    else
+      URL="$LINE"
+      KEY=$(echo "$URL" | sed 's|.*/||; s|[^a-zA-Z0-9._-]|_|g')
+    fi
+
+    TXTFILE="$RAW/${KEY}.txt"
+    HTMLFILE="$RAW/html-refs/${KEY}.html"
+
+    echo "[fetch] $KEY ← $URL"
+
+    # Fetch abs page
+    curl -sL --max-time 30 "$URL" \
+      -H "User-Agent: erdfa-publish/0.1 (research archival)" \
+      -o "$TXTFILE" 2>/dev/null || { echo "  ✗ failed"; continue; }
+
+    # Also try HTML version for bibliography
+    ARXIV_ID=$(echo "$URL" | grep -oP '(\d+\.\d+|[a-z-]+/\d+)' | tail -1)
+    if [ -n "$ARXIV_ID" ]; then
+      curl -sL --max-time 30 "https://arxiv.org/html/${ARXIV_ID}v1" \
+        -o "$HTMLFILE" 2>/dev/null || true
+      [ "$(wc -c < "$HTMLFILE" 2>/dev/null || echo 0)" -lt 20000 ] && \
+        curl -sL --max-time 30 "https://arxiv.org/html/${ARXIV_ID}v2" \
+          -o "$HTMLFILE" 2>/dev/null || true
+    fi
+
+    # Witness
+    HASH=$(seal_hash "$TXTFILE")
+    ORB=$(orbifold_from_hash "$HASH")
+    DASL="0xda51${HASH:0:12}"
+    SIZE=$(wc -c < "$TXTFILE")
+    TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    echo "  witness=$HASH orb=($ORB) dasl=$DASL size=$SIZE"
+
+    # Seal header — use python to handle special chars in URLs
+    python3 -c "
+header = '--- erdfa-seal ---\nURL: $URL\nKey: $KEY\nWitness: $HASH\nDASL: $DASL\nOrbifold: ($ORB)\nTimestamp: $TS\nSize: $SIZE\n---\n'
+with open('$TXTFILE','r') as f: body = f.read()
+with open('$TXTFILE','w') as f: f.write(header + body)
+"
+
+    # JSONL manifest (one line per entry, appendable)
+    echo "{\"key\":\"$KEY\",\"url\":\"$URL\",\"witness\":\"$HASH\",\"dasl\":\"$DASL\",\"orbifold\":[$ORB],\"size\":$SIZE,\"timestamp\":\"$TS\"}" >> "$MANIFEST"
+  done
+
+  echo "[fetch] manifest → $MANIFEST"
+  echo "[fetch] $(wc -l < "$MANIFEST") entries sealed"
+}
+
+do_bib() {
+  local OUTDIR="$1"
+  local HTMLDIR="$OUTDIR/raw/html-refs"
+  local BIBFILE="$OUTDIR/bibliography.jsonl"
+  local BIBTXT="$OUTDIR/bibliography_all.txt"
+
+  > "$BIBFILE"
+  echo "# Bibliography extracted from erdfa-archive" > "$BIBTXT"
+  echo "# $(date -u)" >> "$BIBTXT"
+
+  for F in "$HTMLDIR"/*.html; do
+    [ ! -f "$F" ] && continue
+    SIZE=$(wc -c < "$F")
+    [ "$SIZE" -lt 20000 ] && continue  # skip redirect stubs
+
+    KEY=$(basename "$F" .html)
+    BIBONE="$HTMLDIR/${KEY}.bib.txt"
+
+    # Extract bibliography section (arxiv HTML5 uses ltx_bibliography)
+    START=$(grep -n 'ltx_bibliography\|id="bib"' "$F" | head -1 | cut -d: -f1)
+    if [ -z "$START" ]; then
+      echo "[bib] $KEY: no bibliography section"
+      continue
+    fi
+    sed -n "${START},\$p" "$F" | sed 's/<[^>]*>//g' | sed '/^\s*$/d' > "$BIBONE"
+
+    # Append to combined file
+    echo "" >> "$BIBTXT"
+    echo "=== $KEY ===" >> "$BIBTXT"
+    cat "$BIBONE" >> "$BIBTXT"
+
+    # Extract structured refs from the bib text
+    ENTRIES=$(grep -c '^\[' "$BIBONE" || true)
+
+    # Write JSONL: key + raw bib entries
+    python3 -c "
+import json, re, sys
+key = '$KEY'
+lines = open('$BIBONE').read()
+# Split on [N] markers
+entries = re.split(r'\n(?=\[\d+\])', lines)
+refs = []
+for e in entries:
+    e = e.strip()
+    if not e or not e.startswith('['): continue
+    refs.append(e.replace('\\n', ' ').strip())
+print(json.dumps({'key': key, 'count': len(refs), 'refs': refs}))
+" >> "$BIBFILE"
+
+    echo "[bib] $KEY: $ENTRIES references"
+  done
+
+  echo "[bib] → $BIBFILE"
+  echo "[bib] → $BIBTXT"
+  echo "[bib] $(wc -l < "$BIBFILE") papers processed"
+}
+
+do_import() {
+  local OUTDIR="$1"
+  local RAW="$OUTDIR/raw"
+  local SHARDS="$OUTDIR/shards"
+  mkdir -p "$SHARDS"
+
+  echo "[import] erdfa-cli import --src $RAW --dir $SHARDS --max-depth 2"
+  "$ERDFA" import --src "$RAW" --dir "$SHARDS" --max-depth 2
+
+  echo "[import] erdfa-cli index --dir $SHARDS"
+  "$ERDFA" index --dir "$SHARDS" 2>/dev/null || true
+
+  echo "[import] done → $SHARDS"
+}
+
+case "$CMD" in
+  fetch)  do_fetch "${1:?urls.txt required}" "${2:?output_dir required}" ;;
+  bib)    do_bib "${1:?output_dir required}" ;;
+  import) do_import "${1:?output_dir required}" ;;
+  all)
+    URLFILE="${1:?urls.txt required}"
+    OUTDIR="${2:?output_dir required}"
+    do_fetch "$URLFILE" "$OUTDIR"
+    do_bib "$OUTDIR"
+    do_import "$OUTDIR"
+    ;;
+  *) usage ;;
+esac

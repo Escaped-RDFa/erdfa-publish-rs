@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# da51-nix-snapshot — Name files by DASL address and snapshot to nix store
+#
+# Reads seal_manifest.jsonl files, copies raw content named by DASL address,
+# builds a registry, and snapshots the whole directory to nix store.
+#
+# Usage:
+#   da51-nix-snapshot <output_dir> <manifest1.jsonl> [manifest2.jsonl ...]
+#
+# Output:
+#   <output_dir>/0xda51*.txt          — raw files named by DASL
+#   <output_dir>/da51_registry.jsonl  — lookup table: DASL → key, orbifold, witness
+#   /nix/store/...-da51-archive       — immutable nix snapshot
+
+set -euo pipefail
+
+OUTDIR="${1:?Usage: da51-nix-snapshot <output_dir> <manifest1.jsonl> ...}"
+shift
+MANIFESTS=("$@")
+
+mkdir -p "$OUTDIR"
+REGISTRY="$OUTDIR/da51_registry.jsonl"
+> "$REGISTRY"
+
+for MANIFEST in "${MANIFESTS[@]}"; do
+  [ -f "$MANIFEST" ] || continue
+  RAWDIR="$(dirname "$MANIFEST")"
+
+  while IFS= read -r LINE; do
+    [ -z "$LINE" ] && continue
+    DASL=$(echo "$LINE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('dasl',''))")
+    KEY=$(echo "$LINE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('key',''))")
+    [ -z "$DASL" ] && continue
+
+    # Find source file
+    SRC=""
+    for DIR in "$RAWDIR" "$RAWDIR/raw"; do
+      for EXT in .txt .pdf; do
+        [ -f "$DIR/${KEY}${EXT}" ] && SRC="$DIR/${KEY}${EXT}" && break 2
+      done
+    done
+    [ -z "$SRC" ] && continue
+
+    # Copy named by DASL-key
+    EXT="${SRC##*.}"
+    DST="$OUTDIR/${DASL}-${KEY}.${EXT}"
+    [ -f "$DST" ] || cp "$SRC" "$DST"
+
+    # Append to registry
+    echo "$LINE" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(json.dumps({
+    'dasl': d.get('dasl'),
+    'key': d.get('key'),
+    'orbifold': d.get('orbifold'),
+    'witness': d.get('witness','')[:16],
+    'file': '$DST'
+}))" >> "$REGISTRY"
+
+  done < "$MANIFEST"
+done
+
+COUNT=$(wc -l < "$REGISTRY")
+echo "[da51] $COUNT files named by DASL address in $OUTDIR"
+
+# Snapshot to nix store
+NIX_PATH=$(nix-store --add "$OUTDIR" 2>&1 | grep '/nix/store')
+echo "[nix] $NIX_PATH"
+
+# Record the nix path
+echo "{\"nix_store\": \"$NIX_PATH\", \"count\": $COUNT, \"timestamp\": \"$(date -Iseconds)\"}" > "$OUTDIR/nix_snapshot.json"
+echo "[done] Registry: $REGISTRY"
+echo "[done] Nix: $NIX_PATH"

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# da51-html-clean — Strip HTML from DA51-named files, re-import, export TTL
+#
+# Usage:
+#   da51-html-clean <input_dir> <output_dir>
+#
+# Preserves erdfa-seal headers. Uses html2text for conversion.
+# Then re-imports via erdfa-cli and exports via da51_ttl_erdfa.
+
+set -euo pipefail
+
+INDIR="${1:?Usage: da51-html-clean <input_dir> <output_dir>}"
+OUTDIR="${2:?Usage: da51-html-clean <input_dir> <output_dir>}"
+ERDFA="$HOME/erdfa-publish/target/release/erdfa-cli"
+TTL_EXPORT="$HOME/erdfa-publish/target/release/da51_ttl_erdfa"
+SHARDDIR="$OUTDIR/shards"
+TTLFILE="$OUTDIR/da51-tree.ttl"
+
+mkdir -p "$OUTDIR" "$SHARDDIR"
+
+COUNT=0
+for F in "$INDIR"/0xda51*.txt "$INDIR"/0xda51*.pdf; do
+  [ -f "$F" ] || continue
+  NAME=$(basename "$F")
+  OUT="$OUTDIR/$NAME"
+
+  # Extract seal header (lines between --- erdfa-seal --- markers)
+  HEADER=$(sed -n '/^--- erdfa-seal ---$/,/^---$/p' "$F")
+
+  # Convert HTML body to text, stripping nav/footer boilerplate
+  BODY=$(sed '1,/^---$/{ /^--- erdfa-seal ---$/,/^---$/d }' "$F" | \
+    python3 -c "
+import sys, re
+html = sys.stdin.read()
+# Extract main content between mw-content-text or bodyContent divs (Wikipedia)
+# or between <main> tags, or <article>, falling back to <body>
+for tag in [r'<div id=\"mw-content-text\"[^>]*>(.*?)</div>\s*<div class=\"printfooter',
+            r'<div id=\"bodyContent\"[^>]*>(.*?)<div id=\"catlinks',
+            r'<main[^>]*>(.*?)</main>',
+            r'<article[^>]*>(.*?)</article>',
+            r'<body[^>]*>(.*?)</body>']:
+    m = re.search(tag, html, re.DOTALL)
+    if m:
+        html = m.group(1)
+        break
+# Strip HTML tags
+text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
+text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
+text = re.sub(r'<[^>]+>', ' ', text)
+# Clean whitespace
+text = re.sub(r'&amp;', '&', text)
+text = re.sub(r'&lt;', '<', text)
+text = re.sub(r'&gt;', '>', text)
+text = re.sub(r'&nbsp;', ' ', text)
+text = re.sub(r'&#\d+;', '', text)
+text = re.sub(r' +', ' ', text)
+text = re.sub(r'\n\s*\n', '\n\n', text)
+print(text.strip())
+" 2>/dev/null || sed '1,/^---$/{ /^--- erdfa-seal ---$/,/^---$/d }' "$F" | sed 's/<[^>]*>//g')
+
+  # Reassemble
+  printf '%s\n%s\n' "$HEADER" "$BODY" > "$OUT"
+  COUNT=$((COUNT + 1))
+done
+
+echo "[clean] $COUNT files cleaned → $OUTDIR"
+
+# Import into CBOR shards
+echo "[import] erdfa-cli import → $SHARDDIR"
+"$ERDFA" import --src "$OUTDIR" --dir "$SHARDDIR" --max-depth 2 2>&1 | tail -3
+
+# Export as TTL
+echo "[ttl] da51_ttl_erdfa → $TTLFILE"
+"$TTL_EXPORT" --dir "$SHARDDIR" --output "$TTLFILE" 2>&1
+
+echo "[done] $TTLFILE"
+wc -l "$TTLFILE"
