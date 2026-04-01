@@ -52,14 +52,31 @@ pub struct Shard {
     pub component: Component,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub conjugacy_class: u64,
+    #[serde(default)]
+    pub orbifold: [u64; 3],
+    #[serde(default)]
+    pub dasl_cid: u64,
 }
 
 impl Shard {
     pub fn new(id: impl Into<String>, component: Component) -> Self {
         let id = id.into();
         let json = serde_json::to_vec(&component).unwrap_or_default();
-        let cid = format!("bafk{}", &hex::encode(Sha256::digest(&json))[..32]);
-        Self { id, cid, component, tags: Vec::new() }
+        let hash: [u8; 32] = Sha256::digest(&json).into();
+        let cid = format!("bafk{}", &hex::encode(&hash)[..32]);
+        let h0 = u64::from_le_bytes(hash[0..8].try_into().unwrap());
+        let h1 = u64::from_le_bytes(hash[8..16].try_into().unwrap());
+        let h2 = u64::from_le_bytes(hash[16..24].try_into().unwrap());
+        let cc = h0 % 194;
+        let orbifold = [h0 % 71, h1 % 59, h2 % 47];
+        let s = hash[0] as u64 % 71;
+        let h = hash[1] as u64 % 59;
+        let b = hash[2] as u64 % 47;
+        let h20 = ((hash[3] as u64) << 12) | ((hash[4] as u64) << 4) | ((hash[5] as u64) >> 4);
+        let dasl_cid = (0xDA51u64 << 48) | (6u64 << 44) | (s << 36) | (h << 28) | (b << 20) | h20;
+        Self { id, cid, component, tags: Vec::new(), conjugacy_class: cc, orbifold, dasl_cid }
     }
 
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
@@ -305,3 +322,4 @@ pub mod dasl;
 pub mod sheaf;
 pub mod seal;
 pub mod federation;
+pub mod da51_macros;
