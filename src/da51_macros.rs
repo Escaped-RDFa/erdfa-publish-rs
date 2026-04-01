@@ -8,13 +8,16 @@ pub const SSP: [u64; 15] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 41, 47, 59, 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub struct GriessCell {
-    pub n: u8, // 1..=71  size: bytes per FRACTRAN step
-    pub m: u8, // 1..=59  depth: number of FRACTRAN steps
-    pub c: u8, // 1..=47  color: SSP prime subset touched
+    pub n: u8, // 1..=71  size
+    pub m: u8, // 1..=59  depth
+    pub c: u8, // 1..=47  color
 }
 
-/// 8D Monster Hash coordinate.
+/// 8D Monster Hash coordinate (visible dimensions).
 pub type HashCoord = [u64; 8];
+
+/// 11D full coordinate: 8 visible + 3 compactified (N, M, C).
+pub type FullCoord = [u64; 11];
 
 /// DASL address (8 bytes).
 pub type DaslAddr = u64;
@@ -53,6 +56,30 @@ impl GriessCell {
         }
         g
     }
+
+    /// Unfold: return the 11D coordinate (8 visible + 3 Calabi-Yau).
+    pub fn unfold(&self, visible: &HashCoord) -> FullCoord {
+        [
+            visible[0], visible[1], visible[2], visible[3],
+            visible[4], visible[5], visible[6], visible[7],
+            self.n as u64, self.m as u64, self.c as u64,
+        ]
+    }
+
+    /// Fold: given content hash, produce the 8D visible coords with
+    /// (N, M, C) compactified into the first 3 axes.
+    pub fn fold(&self, content_hash: &HashCoord) -> HashCoord {
+        [
+            (content_hash[0] + self.n as u64) % 71,
+            (content_hash[1] + self.m as u64) % 59,
+            (content_hash[2] + self.c as u64) % 47,
+            content_hash[3],
+            content_hash[4],
+            content_hash[5],
+            content_hash[6],
+            content_hash[7],
+        ]
+    }
 }
 
 /// Compile-time Griess cell from literal coordinates.
@@ -71,40 +98,83 @@ macro_rules! da51_addr {
     };
 }
 
-/// Generate a FRACTRAN hash function from Griess cell coordinates.
-/// The macro expands to a closure that hashes &[u8] → HashCoord.
+/// Hash function trait — users get a function pointer, internals are private.
+pub trait DA51Hash: Send + Sync {
+    fn hash(&self, input: &[u8]) -> HashCoord;
+    fn cell(&self) -> GriessCell;
+    fn name(&self) -> &str;
+}
+
+/// Registry: DA51 address → hash function pointer.
+/// Plugins register their hash implementations here.
+pub type HashRegistry = std::collections::HashMap<DaslAddr, Box<dyn DA51Hash>>;
+
+/// C ABI for hash plugins (.so). Private VMs implement this.
+/// erdfa-publish loads via libloading, wraps in Box<dyn DA51Hash>.
+#[repr(C)]
+pub struct DA51HashFFI {
+    pub name: *const u8,
+    pub name_len: usize,
+    pub n: u8,
+    pub m: u8,
+    pub c: u8,
+    pub hash_fn: extern "C" fn(*const u8, usize, *mut u64),
+}
+
+/// Wrapper: turns a C FFI hash into a Rust trait object.
+pub struct PluginHash {
+    pub ffi: DA51HashFFI,
+}
+
+unsafe impl Send for PluginHash {}
+unsafe impl Sync for PluginHash {}
+
+impl DA51Hash for PluginHash {
+    fn hash(&self, input: &[u8]) -> HashCoord {
+        let mut out = [0u64; 8];
+        (self.ffi.hash_fn)(input.as_ptr(), input.len(), out.as_mut_ptr());
+        out
+    }
+    fn cell(&self) -> GriessCell {
+        GriessCell::new(self.ffi.n, self.ffi.m, self.ffi.c)
+    }
+    fn name(&self) -> &str {
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.ffi.name, self.ffi.name_len)) }
+    }
+}
+
+/// Generate a DA51 hash closure from Griess cell coordinates.
+/// The macro produces a pure function &[u8] → HashCoord.
+/// Internal mixing is opaque — swappable via trait impl.
 #[macro_export]
 macro_rules! da51_hash {
     ($n:expr, $m:expr, $c:expr) => {{
         let cell = GriessCell::new($n, $m, $c);
         move |input: &[u8]| -> HashCoord {
-            // Encode input as integer via chunk multiplication
-            let chunk_size = cell.n as usize;
-            let mut state: u128 = 1;
-            for chunk in input.chunks(chunk_size.max(1)) {
-                let mut v: u128 = 0;
-                for (i, &b) in chunk.iter().enumerate() {
-                    v |= (b as u128) << (i * 8);
-                }
-                state = state.wrapping_mul(v.wrapping_add(1));
-            }
-            // Apply M FRACTRAN steps using C color primes
-            let depth = cell.m as usize;
-            let colors = cell.c as usize;
-            for _step in 0..depth {
-                for ci in 0..colors.min(15) {
-                    let p = SSP[ci] as u128;
-                    if state % p == 0 {
-                        // FRACTRAN fraction: multiply by next prime / this prime
-                        let next = SSP[(ci + 1) % 15] as u128;
-                        state = state / p * next;
-                        break;
-                    }
-                }
-            }
-            // Reduce to 8D Monster lattice
-            let s = state as u64;
-            [s % 71, s % 59, s % 47, s % 31, s % 23, s % 13, s % 11, s % 7]
+            // Default: SHA-256 mixing, mod SSP reduction, Calabi-Yau fold
+            use sha2::{Sha256, Digest};
+            let h = Sha256::digest(input);
+            let visible = [
+                u64::from_le_bytes(h[0..8].try_into().unwrap()) % 71,
+                u64::from_le_bytes(h[8..16].try_into().unwrap()) % 59,
+                u64::from_le_bytes(h[16..24].try_into().unwrap()) % 47,
+                u64::from_le_bytes(h[0..8].try_into().unwrap()) % 31,
+                u64::from_le_bytes(h[8..16].try_into().unwrap()) % 23,
+                u64::from_le_bytes(h[16..24].try_into().unwrap()) % 13,
+                u64::from_le_bytes(h[24..32].try_into().unwrap()) % 11,
+                u64::from_le_bytes(h[24..32].try_into().unwrap()) % 7,
+            ];
+            // Fold (N, M, C) into first 3 axes as Calabi-Yau compactification
+            [
+                (visible[0] + cell.n as u64) % 71,
+                (visible[1] + cell.m as u64) % 59,
+                (visible[2] + cell.c as u64) % 47,
+                visible[3],
+                visible[4],
+                visible[5],
+                visible[6],
+                visible[7],
+            ]
         }
     }};
 }
@@ -179,6 +249,75 @@ mod tests {
     #[test]
     fn griess_product() {
         assert_eq!(71u64 * 59 * 47, 196883);
+    }
+
+    #[test]
+    fn knowledge_tree_bit_to_tree() {
+        // The tree of knowledge: from bit to tree, each level hashed by its Griess cell.
+        // Level 0: Bit        (1,1,1)  — smallest unit
+        // Level 1: Byte       (8,1,1)  — 8 bits
+        // Level 2: Token      (8,2,1)  — byte sequence, 2 steps
+        // Level 3: Bigram     (8,2,2)  — 2 tokens, 2 colors
+        // Level 4: Line       (16,3,2) — tokens in sequence
+        // Level 5: Paragraph  (16,4,3) — lines grouped, trivector
+        // Level 6: Section    (32,4,3) — paragraphs grouped
+        // Level 7: Document   (64,4,3) — sections grouped
+        // Level 8: Corpus     (71,8,3) — documents grouped
+        // Level 9: Lattice    (71,59,3) — corpus on orbifold
+        // Level 10: Monster   (71,59,47) — full Griess algebra
+
+        let levels: Vec<(&str, GriessCell)> = vec![
+            ("bit",       da51_cell!(1, 1, 1)),
+            ("byte",      da51_cell!(8, 1, 1)),
+            ("token",     da51_cell!(8, 2, 1)),
+            ("bigram",    da51_cell!(8, 2, 2)),
+            ("line",      da51_cell!(16, 3, 2)),
+            ("paragraph", da51_cell!(16, 4, 3)),
+            ("section",   da51_cell!(32, 4, 3)),
+            ("document",  da51_cell!(64, 4, 3)),
+            ("corpus",    da51_cell!(71, 8, 3)),
+            ("lattice",   da51_cell!(71, 59, 3)),
+            ("monster",   da51_cell!(71, 59, 47)),
+        ];
+
+        let content = b"In the beginning was the bit.";
+
+        // Each level hashes the same content with increasing resolution
+        let mut prev_hash: Option<HashCoord> = None;
+        for (name, cell) in &levels {
+            let hasher = da51_hash!(cell.n, cell.m, cell.c);
+            let hash = hasher(content);
+            let full = cell.unfold(&hash);
+            let folded = cell.fold(&hash);
+
+            // Every hash lands on the lattice
+            assert!(hash[0] < 71, "{name} orbifold[0] out of range");
+            assert!(hash[1] < 59, "{name} orbifold[1] out of range");
+            assert!(hash[2] < 47, "{name} orbifold[2] out of range");
+
+            // 11D unfold has the cell coords in positions 8,9,10
+            assert_eq!(full[8], cell.n as u64, "{name} unfold N");
+            assert_eq!(full[9], cell.m as u64, "{name} unfold M");
+            assert_eq!(full[10], cell.c as u64, "{name} unfold C");
+
+            // Folded coords include the cell offset
+            assert_eq!(folded[0], (hash[0] + cell.n as u64) % 71, "{name} fold N");
+
+            // Different cells give different hashes (except possible collisions)
+            if let Some(prev) = &prev_hash {
+                // At least one axis should differ (overwhelmingly likely)
+                let same = hash.iter().zip(prev.iter()).filter(|(a,b)| a == b).count();
+                assert!(same < 8, "{name} identical to previous level");
+            }
+            prev_hash = Some(hash);
+        }
+
+        // The tree has 11 levels: bit(1,1,1) → monster(71,59,47)
+        assert_eq!(levels.len(), 11);
+
+        // The top level IS the Griess algebra
+        let top = &levels[10].1;
+        assert_eq!(top.n as u64 * top.m as u64 * top.c as u64, 196883);
     }
 
     #[test]
