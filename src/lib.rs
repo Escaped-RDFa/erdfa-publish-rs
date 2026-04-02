@@ -64,18 +64,41 @@ impl Shard {
     pub fn new(id: impl Into<String>, component: Component) -> Self {
         let id = id.into();
         let json = serde_json::to_vec(&component).unwrap_or_default();
+        // CID stays SHA-256 (content integrity)
         let hash: [u8; 32] = Sha256::digest(&json).into();
         let cid = format!("bafk{}", &hex::encode(&hash)[..32]);
-        let h0 = u64::from_le_bytes(hash[0..8].try_into().unwrap());
-        let h1 = u64::from_le_bytes(hash[8..16].try_into().unwrap());
-        let h2 = u64::from_le_bytes(hash[16..24].try_into().unwrap());
-        let cc = h0 % 194;
-        let orbifold = [h0 % 71, h1 % 59, h2 % 47];
-        let s = hash[0] as u64 % 71;
-        let h = hash[1] as u64 % 59;
-        let b = hash[2] as u64 % 47;
-        let h20 = ((hash[3] as u64) << 12) | ((hash[4] as u64) << 4) | ((hash[5] as u64) >> 4);
-        let dasl_cid = (0xDA51u64 << 48) | (6u64 << 44) | (s << 36) | (h << 28) | (b << 20) | h20;
+        // Monster Hash via DA51Hash trait (default or plugin)
+        let coord = da51_macros::default_hash(&json);
+        let cc = coord[0] % 194;
+        let orbifold = [coord[0], coord[1], coord[2]];
+        let len = json.len() as u64;
+        let dasl_cid = (0xDA51u64 << 48)
+            | ((len & 0xFFFF) << 32)
+            | ((coord[0] & 0xFF) << 24)
+            | ((coord[1] & 0xFF) << 16)
+            | ((coord[2] & 0xFF) << 8)
+            | ((coord[2] % 8) << 4)
+            | (coord[0] % 15);
+        Self { id, cid, component, tags: Vec::new(), conjugacy_class: cc, orbifold, dasl_cid }
+    }
+
+    /// Create shard with a specific hash plugin.
+    pub fn new_with_hash(id: impl Into<String>, component: Component, hasher: &dyn da51_macros::DA51Hash) -> Self {
+        let id = id.into();
+        let json = serde_json::to_vec(&component).unwrap_or_default();
+        let hash: [u8; 32] = Sha256::digest(&json).into();
+        let cid = format!("bafk{}", &hex::encode(&hash)[..32]);
+        let coord = hasher.hash(&json);
+        let cc = coord[0] % 194;
+        let orbifold = [coord[0], coord[1], coord[2]];
+        let len = json.len() as u64;
+        let dasl_cid = (0xDA51u64 << 48)
+            | ((len & 0xFFFF) << 32)
+            | ((coord[0] & 0xFF) << 24)
+            | ((coord[1] & 0xFF) << 16)
+            | ((coord[2] & 0xFF) << 8)
+            | ((coord[2] % 8) << 4)
+            | (coord[0] % 15);
         Self { id, cid, component, tags: Vec::new(), conjugacy_class: cc, orbifold, dasl_cid }
     }
 

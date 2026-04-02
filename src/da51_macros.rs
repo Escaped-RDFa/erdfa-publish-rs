@@ -227,6 +227,13 @@ pub const COMPOSITE: GriessCell = da51_cell!(16, 8, 3);
 /// Monster-complete (71 bytes, 59 steps, 47 colors) — maximum resolution
 pub const MONSTER_COMPLETE: GriessCell = da51_cell!(71, 59, 47);
 
+/// Default hash function used by Shard::new() when no plugin is loaded.
+/// Uses Borcherds cell (8,4,3) with SHA-256 mixing + Calabi-Yau fold.
+pub fn default_hash(input: &[u8]) -> HashCoord {
+    let hasher = da51_hash!(8, 4, 3);
+    hasher(input)
+}
+
 // ── Shard types generated from cells ────────────────────────────
 
 da51_shard_type!(BootstrapShard, 1, 1, 1);
