@@ -39,7 +39,7 @@ impl GriessCell {
     }
 
     pub const fn bott(&self) -> u8 {
-        ((self.n as u16 * self.m as u16 * self.c as u16) % 8) as u8
+        ((self.n as u32 * self.m as u32 * self.c as u32) % 8) as u8
     }
 
     pub const fn hecke_index(&self) -> usize {
