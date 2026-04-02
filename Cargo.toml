@@ -14,11 +14,12 @@ readme = "README.md"
 [features]
 default = ["native"]
 ipfs = ["dep:rust-unixfs", "dep:ipld-core", "dep:multibase", "dep:dirs-next", "dep:data-encoding"]
-native = ["dep:parquet", "dep:arrow", "dep:linux-perf-data", "dep:libloading", "dep:lattice-safe-suite", "dep:clap", "dep:ureq"]
+native = ["dep:parquet", "dep:arrow", "dep:linux-perf-data", "dep:libloading", "dep:lattice-safe-suite", "dep:clap", "dep:ureq", "dep:git2"]
 cli = ["dep:clap"]
 wasm = []
 
 [dependencies]
+git2 = { version = "0.19", optional = true }
 serde_bytes = "0.11"
 log = "0.4"
 dirs-next = { version = "2", optional = true }
