@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""da51-resonate — Find resonances between a knowledge tree and a corpus.
+Matches orbifold coordinates between expressions and sealed documents.
+
+Usage:
+    da51-resonate <knowledge_tree.ttl> <seal_manifest.jsonl> [<manifest2.jsonl> ...]
+"""
+
+import sys
+import json
+import re
+
+def load_tree_orbifolds(ttl_path):
+    """Extract orbifold → expressions from knowledge tree TTL."""
+    clusters = {}
+    with open(ttl_path) as f:
+        for line in f:
+            m = re.match(r'kt:moonshine_(\d+_\d+_\d+)', line)
+            if m:
+                orb = m.group(1)
+            elif 'rdfs:comment' in line and orb:
+                exprs = line.split('"')[1] if '"' in line else ""
+                clusters[orb] = exprs
+                orb = None
+    return clusters
+
+def load_corpus_orbifolds(manifest_paths):
+    """Extract orbifold → paper key from seal manifests."""
+    corpus = {}
+    for path in manifest_paths:
+        try:
+            for line in open(path):
+                d = json.loads(line.strip())
+                orb = d.get("orbifold", [])
+                if len(orb) == 3:
+                    key = f"{orb[0]}_{orb[1]}_{orb[2]}"
+                    corpus[key] = d.get("key", "?")
+        except Exception:
+            pass
+    return corpus
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: da51-resonate <knowledge_tree.ttl> <manifest1.jsonl> [...]")
+        sys.exit(1)
+
+    tree = load_tree_orbifolds(sys.argv[1])
+    corpus = load_corpus_orbifolds(sys.argv[2:])
+
+    print(f"Knowledge tree: {len(tree)} moonshine clusters")
+    print(f"Corpus: {len(corpus)} sealed documents")
+    print()
+
+    resonances = []
+    for orb_key, paper in sorted(corpus.items()):
+        if orb_key in tree:
+            resonances.append((orb_key, paper, tree[orb_key]))
+
+    print(f"=== {len(resonances)} RESONANCES ===\n")
+    for orb, paper, exprs in resonances:
+        print(f"{paper}")
+        print(f"  Orbifold: ({orb.replace('_', ',')})")
+        print(f"  Expressions: {exprs[:120]}")
+        print()
+
+    # Non-resonant papers
+    non = [(k, v) for k, v in corpus.items() if k not in tree]
+    if non:
+        print(f"=== {len(non)} papers with no arithmetic resonance ===")
+        for orb, paper in non[:10]:
+            print(f"  {paper} at ({orb.replace('_', ',')})")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,14 @@
+{
+  "name": "solfunmeme-service",
+  "version": "0.1.0",
+  "description": "Solfunmeme HTTP service - pastebin + claim + status",
+  "type": "service",
+  "port": 7780,
+  "bind": "127.0.0.1",
+  "routes": {
+    "/solfunmeme-service": {
+      "target": "http://127.0.0.1:7780",
+      "description": "Solfunmeme HTTP service - pastebin + claim + status"
+    }
+  }
+}

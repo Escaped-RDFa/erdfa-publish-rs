@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""da51-knowledge-tree — Hash all (n op m) for n,m in [1,71] with 8 operations.
+Produces a TTL file mapping every arithmetic expression to a DA51 address.
+Finds collisions = moonshine (different expressions, same lattice point).
+
+Usage: da51-knowledge-tree --output <file.ttl>
+"""
+
+import sys
+import math
+import hashlib
+import argparse
+
+SSP = [71, 59, 47, 31, 23, 13, 11, 7]
+OPS = {
+    '*':   lambda n, m: n * m,
+    '+':   lambda n, m: n + m,
+    '-':   lambda n, m: n - m,
+    'div': lambda n, m: n // m if m != 0 else 0,
+    'mod': lambda n, m: n % m if m != 0 else 0,
+    'exp': lambda n, m: n ** m if m <= 20 and n <= 71 else n ** min(m, 20),
+    'log': lambda n, m: int(math.log(n, m) * 1000) if m > 1 and n > 0 else 0,
+    'base': lambda n, m: int(str(n), m) if 2 <= m <= 36 and all(int(d) < m for d in str(n) if d.isdigit()) else n,
+}
+
+def monster_hash(content_bytes):
+    h = hashlib.sha256(content_bytes).digest()
+    coords = []
+    for i, p in enumerate(SSP):
+        start = (i * 4) % 24
+        v = int.from_bytes(h[start:start+8], 'little')
+        coords.append(v % p)
+    return tuple(coords)
+
+def dasl(n, m, c):
+    return f"0xda51{n:02x}{m:02x}{c:02x}000000"
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", "-o", default=None)
+    args = parser.parse_args()
+
+    out = open(args.output, 'w') if args.output else sys.stdout
+
+    out.write("""@prefix dasl: <https://meta-introspector.github.io/da51/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix erdfa: <https://meta-introspector.github.io/erdfa/> .
+@prefix sheaf: <https://meta-introspector.github.io/sheaf/> .
+@prefix kt: <https://meta-introspector.github.io/knowledge-tree/> .
+
+""")
+
+    collisions = {}  # orbifold -> list of expressions
+    total = 0
+    moonshine = 0
+
+    for op_name, op_fn in OPS.items():
+        for n in range(1, 72):
+            for m in range(1, 72):
+                try:
+                    result = op_fn(n, m)
+                except:
+                    continue
+
+                expr = f"{n} {op_name} {m}"
+                content = f"{expr} = {result}".encode('utf-8')
+                coords = monster_hash(content)
+                orb = coords[:3]
+                bott = coords[2] % 8
+                safe = f"{n}_{op_name}_{m}"
+
+                out.write(f'kt:{safe} a erdfa:Expression ;\n')
+                out.write(f'    rdfs:label "{expr} = {result}" ;\n')
+                out.write(f'    dasl:addr "{dasl(orb[0], orb[1], orb[2])}" ;\n')
+                out.write(f'    sheaf:orbifold "({orb[0]},{orb[1]},{orb[2]})" ;\n')
+                out.write(f'    dasl:bott {bott} ;\n')
+                out.write(f'    kt:n {n} ; kt:m {m} ;\n')
+                out.write(f'    kt:op "{op_name}" ;\n')
+                out.write(f'    kt:result {result} ;\n')
+                out.write(f'    .\n')
+
+                collisions.setdefault(orb, []).append(expr)
+                total += 1
+
+    # Emit collision clusters as moonshine
+    for orb, exprs in sorted(collisions.items()):
+        if len(exprs) > 1:
+            moonshine += 1
+            safe_orb = f"{orb[0]}_{orb[1]}_{orb[2]}"
+            out.write(f'\nkt:moonshine_{safe_orb} a erdfa:Moonshine ;\n')
+            out.write(f'    sheaf:orbifold "({orb[0]},{orb[1]},{orb[2]})" ;\n')
+            out.write(f'    erdfa:clusterSize {len(exprs)} ;\n')
+            samples = exprs[:5]
+            out.write(f'    rdfs:comment "{"; ".join(samples)}'
+                      f'{" ..." if len(exprs) > 5 else ""}" ;\n')
+            out.write(f'    .\n')
+
+    out.write(f'\n# {total} expressions, {moonshine} moonshine clusters '
+              f'({len(collisions)} unique orbifold points)\n')
+
+    if args.output:
+        out.close()
+
+    print(f"[da51-knowledge-tree] {total} expressions, {moonshine} moonshine clusters, "
+          f"{len(collisions)} unique points", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()

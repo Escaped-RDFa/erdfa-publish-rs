@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""da51-knowledge-tree-full — Build the complete tree of knowledge as TTL.
+
+Merges:
+  - Arithmetic expressions (knowledge_tree.ttl)
+  - Token resonances (token_resonance.ttl)
+  - Document seals (seal manifests)
+  - Glossary terms (TOE_GLOSSARY.ttl)
+  - Borcherds steps + shadow index
+
+Into one connected graph with arrows at every level.
+
+Usage:
+    da51-knowledge-tree-full --outdir <dir> \\
+        --expressions <knowledge_tree.ttl> \\
+        --tokens <token_resonance.ttl> \\
+        --glossary <TOE_GLOSSARY.ttl> \\
+        --manifests <m1.jsonl> [<m2.jsonl> ...]
+"""
+
+import sys
+import os
+import json
+import hashlib
+import argparse
+import collections
+
+SSP = [71, 59, 47, 31, 23, 13, 11, 7]
+
+def monster_hash(text):
+    h = hashlib.sha256(text.encode()).digest()
+    return tuple(
+        int.from_bytes(h[(i*4)%24:(i*4)%24+8], 'little') % p
+        for i, p in enumerate(SSP)
+    )
+
+def orb_str(orb):
+    return f"({orb[0]},{orb[1]},{orb[2]})"
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--outdir", required=True)
+    parser.add_argument("--expressions", required=True)
+    parser.add_argument("--tokens", required=True)
+    parser.add_argument("--glossary", required=True)
+    parser.add_argument("--manifests", nargs="+", required=True)
+    args = parser.parse_args()
+
+    os.makedirs(args.outdir, exist_ok=True)
+
+    # Collect all orbifold points across all levels
+    points = {}  # orb -> [(level, name, source)]
+
+    # Level 0: Glossary terms (schema)
+    with open(args.glossary) as f:
+        for line in f:
+            if 'rdfs:label' in line:
+                label = line.split('"')[1]
+                orb = monster_hash(label)[:3]
+                points.setdefault(orb, []).append(("glossary", label, "schema"))
+
+    # Level 1: Arithmetic expressions
+    expr_count = 0
+    with open(args.expressions) as f:
+        for line in f:
+            if 'rdfs:label' in line and '=' in line:
+                label = line.split('"')[1]
+                orb = monster_hash(label)[:3]
+                points.setdefault(orb, []).append(("expression", label, "arithmetic"))
+                expr_count += 1
+
+    # Level 2: Tokens
+    token_count = 0
+    with open(args.tokens) as f:
+        for line in f:
+            if line.startswith('tok:') and 'a erdfa:Token' in line:
+                name = line.split('tok:')[1].split()[0]
+            elif 'rdfs:label' in line and token_count < 500:
+                label = line.split('"')[1]
+                orb = monster_hash(label)[:3]
+                points.setdefault(orb, []).append(("token", label, "corpus"))
+                token_count += 1
+
+    # Level 3: Documents
+    doc_count = 0
+    for mpath in args.manifests:
+        try:
+            for line in open(mpath):
+                d = json.loads(line.strip())
+                orb = tuple(d.get("orbifold", [0,0,0]))
+                if len(orb) >= 3:
+                    orb = orb[:3]
+                    points.setdefault(orb, []).append(("document", d.get("key","?"), d.get("url","")))
+                    doc_count += 1
+        except:
+            pass
+
+    # Level 4: Borcherds steps (hardcoded from the theory)
+    steps = [
+        ("S1", "Moonshine Module V♮", (24, 24, 24)),
+        ("S2", "Monster Lie Algebra", (26, 26, 26)),
+        ("S3", "Denominator Identity", (19, 19, 19)),
+        ("S4", "McKay-Thompson Twist", (22, 22, 22)),
+        ("X",  "Cubic Monster TOE", (35, 35, 35)),
+    ]
+    for sid, name, orb in steps:
+        points.setdefault(orb, []).append(("borcherds", f"{sid}: {name}", "theory"))
+
+    # Level 5: Constants
+    constants = [
+        ("196883", "dim(Griess) = 47×59×71"),
+        ("196884", "c(1) = 196883 + 1"),
+        ("744", "j(τ) constant term"),
+        ("24", "Leech lattice rank"),
+        ("26", "bosonic string dimension"),
+        ("194", "Monster conjugacy classes"),
+        ("71", "largest trivector SSP prime"),
+        ("59", "middle trivector SSP prime"),
+        ("47", "smallest trivector SSP prime"),
+    ]
+    for val, desc in constants:
+        orb = monster_hash(val)[:3]
+        points.setdefault(orb, []).append(("constant", f"{val} ({desc})", "mathematics"))
+
+    # Find cross-level resonances
+    resonances = {orb: items for orb, items in points.items() if len(set(i[0] for i in items)) > 1}
+
+    # Write the tree
+    tree_path = os.path.join(args.outdir, "knowledge_tree_full.ttl")
+    with open(tree_path, 'w') as out:
+        out.write("@prefix dasl: <https://meta-introspector.github.io/da51/> .\n")
+        out.write("@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n")
+        out.write("@prefix erdfa: <https://meta-introspector.github.io/erdfa/> .\n")
+        out.write("@prefix sheaf: <https://meta-introspector.github.io/sheaf/> .\n")
+        out.write("@prefix kt: <https://meta-introspector.github.io/knowledge-tree/> .\n\n")
+
+        # Emit resonance nodes (cross-level connections)
+        for orb, items in sorted(resonances.items(), key=lambda x: -len(x[1])):
+            levels = set(i[0] for i in items)
+            safe = f"{orb[0]}_{orb[1]}_{orb[2]}"
+            out.write(f'kt:resonance_{safe} a erdfa:Resonance ;\n')
+            out.write(f'    sheaf:orbifold "{orb_str(orb)}" ;\n')
+            out.write(f'    erdfa:levels "{", ".join(sorted(levels))}" ;\n')
+            out.write(f'    erdfa:count {len(items)} ;\n')
+            for level, name, source in items[:10]:
+                esc = name.replace('"', '\\"')[:80]
+                out.write(f'    kt:{level} "{esc}" ;\n')
+            out.write(f'    .\n\n')
+
+        # Summary
+        out.write(f'\n# Knowledge Tree Summary\n')
+        out.write(f'# Glossary terms: {sum(1 for v in points.values() for l,_,_ in v if l=="glossary")}\n')
+        out.write(f'# Expressions: {expr_count}\n')
+        out.write(f'# Tokens: {token_count}\n')
+        out.write(f'# Documents: {doc_count}\n')
+        out.write(f'# Constants: {len(constants)}\n')
+        out.write(f'# Borcherds steps: {len(steps)}\n')
+        out.write(f'# Unique orbifold points: {len(points)}\n')
+        out.write(f'# Cross-level resonances: {len(resonances)}\n')
+
+    # Write resonance report
+    report_path = os.path.join(args.outdir, "resonance_report.txt")
+    with open(report_path, 'w') as rpt:
+        rpt.write(f"Knowledge Tree Resonance Report\n")
+        rpt.write(f"{'='*60}\n\n")
+        rpt.write(f"Levels: glossary, expression, token, document, borcherds, constant\n")
+        rpt.write(f"Total orbifold points: {len(points)}\n")
+        rpt.write(f"Cross-level resonances: {len(resonances)}\n\n")
+
+        for orb, items in sorted(resonances.items(), key=lambda x: -len(set(i[0] for i in x[1]))):
+            levels = sorted(set(i[0] for i in items))
+            rpt.write(f"Orbifold {orb_str(orb)} — {len(levels)} levels, {len(items)} items\n")
+            for level, name, source in items[:8]:
+                rpt.write(f"  [{level:12s}] {name[:70]}\n")
+            if len(items) > 8:
+                rpt.write(f"  ... and {len(items)-8} more\n")
+            rpt.write(f"\n")
+
+    print(f"[da51-knowledge-tree-full] {len(points)} points, {len(resonances)} resonances",
+          file=sys.stderr)
+    print(f"  → {tree_path}", file=sys.stderr)
+    print(f"  → {report_path}", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()

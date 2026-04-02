@@ -7,3 +7,7 @@
 !/shards/kiro-chats/indexes/INDEX_SUMMARY.json
 result
 *.olean
+__pycache__/
+*.so
+*.pyc
+target/

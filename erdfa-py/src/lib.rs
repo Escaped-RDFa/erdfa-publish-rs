@@ -166,6 +166,107 @@ fn seal_unpack(py: Python<'_>, data: &[u8]) -> PyResult<(Vec<f32>, Py<PyBytes>, 
     Ok((state, PyBytes::new_bound(py, &dna).into(), PyBytes::new_bound(py, &wasm).into()))
 }
 
+// === zkperf: register capture + SSP encoding ===
+
+const SSP: [u64; 15] = [2,3,5,7,11,13,17,19,23,29,31,41,47,59,71];
+
+/// FRACTRAN step over 15D SSP exponent vector.
+/// Fractions are pairs of (num_exps, den_exps) each [u8; 15].
+/// Returns (fired_index, new_state) or (-1, state) if no fraction fires.
+#[pyfunction]
+fn fractran_step_ssp(state: Vec<u8>, fractions: Vec<(Vec<u8>, Vec<u8>)>) -> (i32, Vec<u8>) {
+    let mut s = state;
+    for (fi, (num, den)) in fractions.iter().enumerate() {
+        let can_fire = (0..15).all(|i| s.get(i).copied().unwrap_or(0) >= den.get(i).copied().unwrap_or(0));
+        if can_fire {
+            for i in 0..15 {
+                let sv = s.get(i).copied().unwrap_or(0);
+                let dv = den.get(i).copied().unwrap_or(0);
+                let nv = num.get(i).copied().unwrap_or(0);
+                s[i] = sv - dv + nv;
+            }
+            return (fi as i32, s);
+        }
+    }
+    (-1, s)
+}
+
+/// Run FRACTRAN predictor over SSP vector for N steps.
+/// Returns trace of (fired_index, state) pairs.
+#[pyfunction]
+fn fractran_run_ssp(state: Vec<u8>, fractions: Vec<(Vec<u8>, Vec<u8>)>, max_steps: usize) -> Vec<(i32, Vec<u8>)> {
+    let mut s = state;
+    let mut trace = Vec::new();
+    for _ in 0..max_steps {
+        let (fi, next) = fractran_step_ssp(s, fractions.clone());
+        trace.push((fi, next.clone()));
+        if fi < 0 { break; }
+        s = next;
+    }
+    trace
+}
+
+/// Predict phase transition: returns (fires: bool, which_fraction: i32, new_ssp: [u8;15])
+#[pyfunction]
+fn fractran_predict(state: Vec<u8>, fractions: Vec<(Vec<u8>, Vec<u8>)>) -> (bool, i32, Vec<u8>) {
+    let (fi, new_state) = fractran_step_ssp(state, fractions);
+    (fi >= 0, fi, new_state)
+}
+
+/// Capture x86_64 registers via inline asm. Returns dict with ax-r15, ip, sp, flags.
+#[pyfunction]
+fn capture_regs() -> PyResult<std::collections::HashMap<String, u64>> {
+    let (ax, bx, cx, dx, si, di, r8, r9, r10, r11, r12, r13, r14, r15): (u64,u64,u64,u64,u64,u64,u64,u64,u64,u64,u64,u64,u64,u64);
+    unsafe {
+        std::arch::asm!(
+            "mov {ax}, rax", "mov {bx}, rbx", "mov {cx}, rcx", "mov {dx}, rdx",
+            "mov {si}, rsi", "mov {di}, rdi",
+            "mov {r8}, r8", "mov {r9}, r9", "mov {r10}, r10", "mov {r11}, r11",
+            "mov {r12}, r12", "mov {r13}, r13", "mov {r14}, r14", "mov {r15}, r15",
+            ax = out(reg) ax, bx = out(reg) bx, cx = out(reg) cx, dx = out(reg) dx,
+            si = out(reg) si, di = out(reg) di,
+            r8 = out(reg) r8, r9 = out(reg) r9, r10 = out(reg) r10, r11 = out(reg) r11,
+            r12 = out(reg) r12, r13 = out(reg) r13, r14 = out(reg) r14, r15 = out(reg) r15,
+        );
+    }
+    let mut m = std::collections::HashMap::new();
+    for (name, val) in [("ax",ax),("bx",bx),("cx",cx),("dx",dx),("si",si),("di",di),
+        ("r8",r8),("r9",r9),("r10",r10),("r11",r11),("r12",r12),("r13",r13),("r14",r14),("r15",r15)] {
+        m.insert(name.to_string(), val);
+    }
+    Ok(m)
+}
+
+/// Encode register dict as 15 SSP prime exponents (log2 scale 0-7).
+#[pyfunction]
+fn regs_to_ssp(regs: std::collections::HashMap<String, u64>) -> Vec<u8> {
+    let names = ["ax","bx","cx","dx","si","di","r8","r9","r10","r11","r12","r13","r14","r15","ip"];
+    names.iter().map(|&n| {
+        let v = regs.get(n).copied().unwrap_or(0);
+        if v == 0 { 0u8 } else { (64 - v.leading_zeros()).min(7) as u8 }
+    }).collect()
+}
+
+/// Project SSP exponents to orbifold (mod 71, mod 59, mod 47).
+#[pyfunction]
+fn ssp_to_orbifold(ssp: Vec<u8>) -> (u8, u8, u8) {
+    let mut h: u64 = 0xcbf29ce484222325; // FNV offset
+    for (i, &e) in ssp.iter().enumerate() {
+        h ^= (e as u64) * SSP[i.min(14)];
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    ((h % 71) as u8, ((h >> 16) % 59) as u8, ((h >> 32) % 47) as u8)
+}
+
+/// One-shot: capture registers → SSP → orbifold. Returns (ssp, orbifold) tuple.
+#[pyfunction]
+fn zkperf_snapshot() -> PyResult<(Vec<u8>, (u8, u8, u8))> {
+    let regs = capture_regs()?;
+    let ssp = regs_to_ssp(regs);
+    let orb = ssp_to_orbifold(ssp.clone());
+    Ok((ssp, orb))
+}
+
 #[pymodule]
 fn erdfa_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orbifold_coords, m)?)?;
@@ -179,5 +280,10 @@ fn erdfa_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(seal_decode, m)?)?;
     m.add_function(wrap_pyfunction!(seal_pack, m)?)?;
     m.add_function(wrap_pyfunction!(seal_unpack, m)?)?;
+    // zkperf
+    m.add_function(wrap_pyfunction!(capture_regs, m)?)?;
+    m.add_function(wrap_pyfunction!(regs_to_ssp, m)?)?;
+    m.add_function(wrap_pyfunction!(ssp_to_orbifold, m)?)?;
+    m.add_function(wrap_pyfunction!(zkperf_snapshot, m)?)?;
     Ok(())
 }

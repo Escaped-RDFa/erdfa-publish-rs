@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""da51-token-resonate — Extract tokens from cleaned DA51 files, hash each token,
+find shared tokens across documents, and discover token moonshine (different tokens,
+same orbifold point).
+
+Usage:
+    da51-token-resonate <clean_dir> [--output <file.ttl>] [--tree <knowledge_tree.ttl>]
+"""
+
+import sys
+import os
+import hashlib
+import argparse
+import collections
+
+SSP = [71, 59, 47, 31, 23, 13, 11, 7]
+
+def monster_hash(text):
+    h = hashlib.sha256(text.encode()).digest()
+    return tuple(
+        int.from_bytes(h[(i*4)%24:(i*4)%24+8], 'little') % p
+        for i, p in enumerate(SSP)
+    )
+
+def dasl_from_orb(orb):
+    return f"0xda51{orb[0]:02x}{orb[1]:02x}{orb[2]:02x}000000"
+
+def extract_tokens(filepath):
+    with open(filepath) as f:
+        text = f.read()
+    if '---' in text:
+        text = text.split('---', 2)[-1]
+    tokens = []
+    for word in text.lower().split():
+        word = word.strip('.,;:!?()[]{}"\'\\/|<>*#@`~')
+        if len(word) > 2 and not word.startswith('http') and not word.startswith('0x'):
+            tokens.append(word)
+    return tokens
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("clean_dir", help="Directory of 0xda51-*.txt files")
+    parser.add_argument("--output", "-o", help="Output TTL file")
+    parser.add_argument("--tree", "-t", help="Knowledge tree TTL for cross-resonance")
+    args = parser.parse_args()
+
+    # Collect tokens per document
+    token_docs = collections.defaultdict(set)
+    doc_count = 0
+
+    for fname in sorted(os.listdir(args.clean_dir)):
+        if not fname.startswith("0xda51") or not fname.endswith(".txt"):
+            continue
+        doc_key = fname.replace(".txt", "")
+        tokens = extract_tokens(os.path.join(args.clean_dir, fname))
+        for t in tokens:
+            token_docs[t].add(doc_key)
+        doc_count += 1
+
+    shared = {t: docs for t, docs in token_docs.items() if len(docs) > 1}
+
+    # Hash tokens, find moonshine
+    orb_tokens = collections.defaultdict(list)
+    for token in shared:
+        orb = monster_hash(token)[:3]
+        orb_tokens[orb].append(token)
+
+    moonshine = {o: ts for o, ts in orb_tokens.items() if len(ts) > 1}
+
+    # Output
+    out = open(args.output, 'w') if args.output else sys.stdout
+
+    out.write("@prefix dasl: <https://meta-introspector.github.io/da51/> .\n")
+    out.write("@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n")
+    out.write("@prefix erdfa: <https://meta-introspector.github.io/erdfa/> .\n")
+    out.write("@prefix sheaf: <https://meta-introspector.github.io/sheaf/> .\n")
+    out.write("@prefix tok: <https://meta-introspector.github.io/token/> .\n\n")
+
+    # Top shared tokens
+    top = sorted(shared.items(), key=lambda x: -len(x[1]))[:200]
+    for token, docs in top:
+        orb = monster_hash(token)
+        safe = token.replace("-", "_").replace("'", "")
+        out.write(f'tok:{safe} a erdfa:Token ;\n')
+        out.write(f'    rdfs:label "{token}" ;\n')
+        out.write(f'    dasl:addr "{dasl_from_orb(orb)}" ;\n')
+        out.write(f'    sheaf:orbifold "({orb[0]},{orb[1]},{orb[2]})" ;\n')
+        out.write(f'    erdfa:docCount {len(docs)} ;\n')
+        samples = sorted(docs)[:5]
+        for d in samples:
+            safe_d = d.replace("-", "_")
+            out.write(f'    erdfa:appearsIn <shard:{safe_d}> ;\n')
+        out.write(f'    .\n\n')
+
+    # Moonshine clusters
+    for orb, tokens in sorted(moonshine.items(), key=lambda x: -len(x[1]))[:50]:
+        safe_orb = f"{orb[0]}_{orb[1]}_{orb[2]}"
+        out.write(f'tok:moonshine_{safe_orb} a erdfa:Moonshine ;\n')
+        out.write(f'    sheaf:orbifold "({orb[0]},{orb[1]},{orb[2]})" ;\n')
+        out.write(f'    erdfa:clusterSize {len(tokens)} ;\n')
+        out.write(f'    rdfs:comment "{"; ".join(tokens[:8])}" ;\n')
+        out.write(f'    .\n\n')
+
+    out.write(f'# {doc_count} documents, {len(token_docs)} unique tokens, '
+              f'{len(shared)} shared, {len(moonshine)} moonshine clusters\n')
+
+    if args.output:
+        out.close()
+
+    print(f"[da51-token-resonate] {doc_count} docs, {len(token_docs)} tokens, "
+          f"{len(shared)} shared, {len(moonshine)} moonshine", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()

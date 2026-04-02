@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""da51-glossary — Generate a DA51-addressed glossary in Turtle format.
+
+Usage:
+    da51-glossary <terms_file> [--output <file.ttl>]
+
+terms_file: one term per line, # comments ok
+Output: Turtle with Monster Hash DA51 addresses for each term + arrows between them.
+"""
+
+import sys
+import argparse
+
+SSP = [71, 59, 47, 31, 23, 13, 11, 7]
+SSP_ALL = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 41, 47, 59, 71]
+BOTT_LABELS = ["R", "C", "H", "H⊕H", "H(2)", "C(4)", "R(8)", "R(8)⊕R(8)"]
+
+def monster_hash(term):
+    n = len(term.encode('utf-8'))
+    coords = [n % p for p in SSP]
+    orb = tuple(coords[:3])
+    bott = n % 8
+    hecke = SSP_ALL[n % 15]
+    eigen = "Hub" if all(c > 35 for c in orb) else "Spoke"
+    dasl = f"0xda51{n:04x}{orb[0]:02x}{orb[1]:02x}{orb[2]:02x}"
+    return {
+        "coords": coords, "orbifold": orb, "bott": bott,
+        "hecke": hecke, "eigenspace": eigen, "dasl": dasl, "length": n,
+    }
+
+def safe_id(term):
+    return term.replace(" ", "_").replace("(", "").replace(")", "") \
+               .replace("-", "_").replace("é", "e").replace("'", "") \
+               .replace("/", "_").replace(",", "").replace(".", "")
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate DA51-addressed glossary")
+    parser.add_argument("terms_file", help="One term per line")
+    parser.add_argument("--output", "-o", help="Output .ttl file (default: stdout)")
+    parser.add_argument("--arrows", "-a", help="Arrows file: 'from -> to' per line")
+    args = parser.parse_args()
+
+    with open(args.terms_file) as f:
+        terms = [l.strip() for l in f if l.strip() and not l.startswith('#')]
+
+    arrows = []
+    if args.arrows:
+        with open(args.arrows) as f:
+            for l in f:
+                l = l.strip()
+                if '->' in l and not l.startswith('#'):
+                    src, dst = l.split('->', 1)
+                    arrows.append((src.strip(), dst.strip()))
+
+    out = open(args.output, 'w') if args.output else sys.stdout
+
+    out.write("@prefix dasl:     <https://meta-introspector.github.io/da51/> .\n")
+    out.write("@prefix rdfs:     <http://www.w3.org/2000/01/rdf-schema#> .\n")
+    out.write("@prefix erdfa:    <https://meta-introspector.github.io/erdfa/> .\n")
+    out.write("@prefix sheaf:    <https://meta-introspector.github.io/sheaf/> .\n")
+    out.write("@prefix cft:      <https://meta-introspector.github.io/cft/> .\n")
+    out.write("@prefix glossary: <https://meta-introspector.github.io/glossary/> .\n\n")
+
+    hashes = {}
+    for term in terms:
+        h = monster_hash(term)
+        hashes[term] = h
+        sid = safe_id(term)
+        out.write(f"glossary:{sid} a erdfa:Term ;\n")
+        out.write(f'    rdfs:label "{term}" ;\n')
+        out.write(f'    dasl:addr "{h["dasl"]}" ;\n')
+        out.write(f'    sheaf:orbifold "({h["orbifold"][0]},{h["orbifold"][1]},{h["orbifold"][2]})" ;\n')
+        out.write(f'    dasl:bott "{h["bott"]} ({BOTT_LABELS[h["bott"]]})" ;\n')
+        out.write(f'    dasl:hecke "T_{h["hecke"]}" ;\n')
+        out.write(f'    dasl:eigenspace "{h["eigenspace"]}" ;\n')
+        out.write(f'    erdfa:byteLength {h["length"]} ;\n')
+
+        # Auto-arrows: terms that share orbifold coordinates
+        for other in terms:
+            if other != term and other in hashes:
+                ho = hashes[other]
+                if ho["orbifold"] == h["orbifold"]:
+                    out.write(f'    erdfa:sameOrbifold glossary:{safe_id(other)} ;\n')
+
+        out.write(f"    .\n\n")
+
+    # Explicit arrows
+    for src, dst in arrows:
+        if src in hashes and dst in hashes:
+            out.write(f"glossary:{safe_id(src)} erdfa:dependsOn glossary:{safe_id(dst)} .\n")
+
+    # Collision report as comment
+    orb_map = {}
+    for term, h in hashes.items():
+        key = h["orbifold"]
+        orb_map.setdefault(key, []).append(term)
+    collisions = {k: v for k, v in orb_map.items() if len(v) > 1}
+    if collisions:
+        out.write(f"\n# Orbifold collisions ({len(collisions)} clusters):\n")
+        for orb, ts in sorted(collisions.items()):
+            out.write(f"#   {orb}: {', '.join(ts)}\n")
+
+    out.write(f"\n# {len(terms)} terms, {len(arrows)} explicit arrows, {len(collisions)} orbifold collisions\n")
+
+    if args.output:
+        out.close()
+        print(f"[da51-glossary] {len(terms)} terms → {args.output}", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()
