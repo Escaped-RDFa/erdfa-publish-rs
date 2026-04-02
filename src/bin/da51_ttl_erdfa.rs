@@ -133,6 +133,47 @@ fn main() {
         // Component type + text preview
         emit_component(&mut out, &node, &shard.component, &mut arrow_count);
 
+        // Provenance
+        if !shard.provenance.version.is_empty() {
+            writeln!(out, "    erdfa:version \"{}\" ;", shard.provenance.version).unwrap();
+        }
+        if !shard.provenance.git_commit.is_empty() {
+            writeln!(out, "    erdfa:gitCommit \"{}\" ;", shard.provenance.git_commit).unwrap();
+        }
+        if shard.provenance.hash_cell != [0, 0, 0] {
+            writeln!(out, "    erdfa:hashCell \"({},{},{})\" ;",
+                shard.provenance.hash_cell[0], shard.provenance.hash_cell[1], shard.provenance.hash_cell[2]).unwrap();
+        }
+
+        // CFT content extract (clean text from KeyValue content field)
+        if let Component::KeyValue { pairs } = &shard.component {
+            for (k, v) in pairs {
+                if k == "content" && v.len() > 10 {
+                    // Extract just the text after the seal header
+                    let clean = if let Some(idx) = v.find("---\n") {
+                        let after = &v[idx+4..];
+                        if let Some(idx2) = after.find("---\n") {
+                            after[idx2+4..].trim()
+                        } else { after.trim() }
+                    } else { v.trim() };
+                    let preview: String = clean.chars().take(200).collect();
+                    let escaped = preview.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ");
+                    if !escaped.is_empty() {
+                        writeln!(out, "    erdfa:contentPreview \"{}\" ;", escaped).unwrap();
+                    }
+                }
+                if k == "scale" {
+                    let scale_name = match v.as_str() {
+                        "0" => "cft:post", "1" => "cft:paragraph", "2" => "cft:line",
+                        "3" => "cft:token", "4" => "cft:emoji", "5" => "cft:byte",
+                        _ => "cft:unknown",
+                    };
+                    writeln!(out, "    cft:depth {} ;", v).unwrap();
+                    writeln!(out, "    cft:scaleName {} ;", scale_name).unwrap();
+                }
+            }
+        }
+
         // Tags
         if !shard.tags.is_empty() {
             let tags: Vec<String> = shard.tags.iter().map(|t| format!("\"{}\"", t)).collect();

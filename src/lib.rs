@@ -58,6 +58,32 @@ pub struct Shard {
     pub orbifold: [u64; 3],
     #[serde(default)]
     pub dasl_cid: u64,
+    #[serde(default)]
+    pub provenance: ShardProvenance,
+}
+
+/// Build provenance: what produced this shard.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ShardProvenance {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub git_commit: String,
+    #[serde(default)]
+    pub hash_cell: [u8; 3],
+    #[serde(default)]
+    pub timestamp: String,
+}
+
+impl ShardProvenance {
+    pub fn current() -> Self {
+        Self {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            git_commit: option_env!("GIT_COMMIT").unwrap_or("unknown").to_string(),
+            hash_cell: [8, 4, 3], // Borcherds default
+            timestamp: String::new(), // filled at runtime if needed
+        }
+    }
 }
 
 impl Shard {
@@ -79,7 +105,7 @@ impl Shard {
             | ((coord[2] & 0xFF) << 8)
             | ((coord[2] % 8) << 4)
             | (coord[0] % 15);
-        Self { id, cid, component, tags: Vec::new(), conjugacy_class: cc, orbifold, dasl_cid }
+        Self { id, cid, component, tags: Vec::new(), conjugacy_class: cc, orbifold, dasl_cid, provenance: ShardProvenance::current() }
     }
 
     /// Create shard with a specific hash plugin.
@@ -99,7 +125,7 @@ impl Shard {
             | ((coord[2] & 0xFF) << 8)
             | ((coord[2] % 8) << 4)
             | (coord[0] % 15);
-        Self { id, cid, component, tags: Vec::new(), conjugacy_class: cc, orbifold, dasl_cid }
+        Self { id, cid, component, tags: Vec::new(), conjugacy_class: cc, orbifold, dasl_cid, provenance: ShardProvenance::current() }
     }
 
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
