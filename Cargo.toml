@@ -122,3 +122,8 @@ required-features = ["cli"]
 [[bin]]
 name = "ticket-ingest"
 path = "src/bin/ticket_ingest.rs"
+
+[[bin]]
+name = "mediawiki-fetch"
+path = "src/bin/mediawiki_fetch.rs"
+required-features = ["native"]
