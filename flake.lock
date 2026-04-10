@@ -20,16 +20,16 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1773821835,
-        "narHash": "sha256-TJ3lSQtW0E2JrznGVm8hOQGVpXjJyXY2guAxku2O9A4=",
+        "lastModified": 1775763530,
+        "narHash": "sha256-BuTK9z1QEwWPOIakQ1gCN4pa4VwVJpfptYCviy2uOGc=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "b40629efe5d6ec48dd1efba650c797ddbd39ace0",
+        "rev": "b0188973b4b2a5b6bdba8b65381d6cd09a533da0",
         "type": "github"
       },
       "original": {
         "owner": "NixOS",
-        "ref": "nixos-unstable",
+        "ref": "nixpkgs-unstable",
         "repo": "nixpkgs",
         "type": "github"
       }
@@ -37,7 +37,24 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "rust-ipfs": "rust-ipfs"
+      }
+    },
+    "rust-ipfs": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1773232132,
+        "narHash": "sha256-MCVf2kme5QZlfRaNZTCAVRKD3UQVTglbbdK0GWiRzS0=",
+        "owner": "meta-introspector",
+        "repo": "rust-ipfs",
+        "rev": "928037957a257f6b81d38aa87c74dda99123c2be",
+        "type": "github"
+      },
+      "original": {
+        "owner": "meta-introspector",
+        "repo": "rust-ipfs",
+        "type": "github"
       }
     },
     "systems": {
