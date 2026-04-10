@@ -2,7 +2,7 @@
   description = "eRDFa Publish — Semantic UI components as DA51 CBOR shards";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     rust-ipfs = {
       url = "github:meta-introspector/rust-ipfs";
@@ -25,6 +25,8 @@
               lockFile = ./Cargo.lock;
               allowBuiltinFetchGit = true;
             };
+            nativeBuildInputs = with pkgs; [ pkg-config ];
+            buildInputs = with pkgs; [ openssl ];
             buildFeatures = [ "native" "cli" "ipfs" ];
             buildNoDefaultFeatures = true;
 
