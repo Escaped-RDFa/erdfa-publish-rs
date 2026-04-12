@@ -700,7 +700,7 @@ fn cmd_index(dir: &PathBuf, out: Option<&std::path::Path>) {
         // Word index — extract words from content field of KeyValue shards
         if let Component::KeyValue { ref pairs } = shard.component {
             for (k, v) in pairs {
-                if k == "content" || k == "bigrams" || k == "trigrams" { continue; }
+                if k == "bigrams" || k == "trigrams" { continue; }
                 for word in v.split_whitespace() {
                     let w = word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
                     if w.len() >= 3 {

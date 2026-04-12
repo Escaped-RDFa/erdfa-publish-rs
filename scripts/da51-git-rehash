@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# da51-git-rehash — Rehash an entire git repo with Monster Hash DA51 addresses.
+#
+# Creates a parallel index: git SHA → DA51 address for every object.
+# The DA51 address is computed from the object content via GriessCell(8,4,3).
+#
+# Usage:
+#   da51-git-rehash <repo_dir> [--output <da51_index.jsonl>]
+#
+# Output: JSONL with one line per git object:
+#   {"sha":"abc123...","da51":"0xda51...","orb":[N,M,C],"type":"blob","size":1234,"path":"src/main.rs"}
+
+set -euo pipefail
+
+REPO="${1:?Usage: da51-git-rehash <repo_dir> [--output <file>]}"
+OUTPUT="${3:-$REPO/.git/da51_index.jsonl}"
+
+DA51_FILTER="${DA51_FILTER:-$HOME/bin/da51-git-filter}"
+
+cd "$REPO"
+
+echo "[da51-git-rehash] Repo: $REPO"
+echo "[da51-git-rehash] Output: $OUTPUT"
+
+> "$OUTPUT"
+
+TOTAL=0
+BLOBS=0
+TREES=0
+COMMITS=0
+
+# Hash every blob (file content)
+git rev-list --all --objects | while read SHA PATH; do
+  TYPE=$(git cat-file -t "$SHA" 2>/dev/null || echo "unknown")
+  SIZE=$(git cat-file -s "$SHA" 2>/dev/null || echo "0")
+
+  case "$TYPE" in
+    blob)
+      # Get content, hash through DA51
+      DA51_LINE=$(git cat-file blob "$SHA" | "$DA51_FILTER" clean "${PATH:-blob}" 2>/dev/null | \
+        grep -o 'DA51:addr=[^ ]*' | sed 's/DA51:addr=//')
+      ORB=$(git cat-file blob "$SHA" | "$DA51_FILTER" clean "${PATH:-blob}" 2>/dev/null | \
+        grep -o 'orb=([^)]*)'  | sed 's/orb=//')
+      BLOBS=$((BLOBS + 1))
+      ;;
+    tree)
+      # Hash the tree listing
+      DA51_LINE=$(git cat-file -p "$SHA" | "$DA51_FILTER" clean "tree" 2>/dev/null | \
+        grep -o 'DA51:addr=[^ ]*' | sed 's/DA51:addr=//')
+      ORB=$(git cat-file -p "$SHA" | "$DA51_FILTER" clean "tree" 2>/dev/null | \
+        grep -o 'orb=([^)]*)'  | sed 's/orb=//')
+      TREES=$((TREES + 1))
+      ;;
+    commit)
+      # Hash the commit message
+      DA51_LINE=$(git cat-file commit "$SHA" | "$DA51_FILTER" clean "commit" 2>/dev/null | \
+        grep -o 'DA51:addr=[^ ]*' | sed 's/DA51:addr=//')
+      ORB=$(git cat-file commit "$SHA" | "$DA51_FILTER" clean "commit" 2>/dev/null | \
+        grep -o 'orb=([^)]*)'  | sed 's/orb=//')
+      COMMITS=$((COMMITS + 1))
+      ;;
+    *)
+      continue
+      ;;
+  esac
+
+  [ -z "$DA51_LINE" ] && continue
+
+  echo "{\"sha\":\"$SHA\",\"da51\":\"$DA51_LINE\",\"orb\":\"$ORB\",\"type\":\"$TYPE\",\"size\":$SIZE,\"path\":\"$PATH\"}" >> "$OUTPUT"
+  TOTAL=$((TOTAL + 1))
+
+  # Progress every 100
+  [ $((TOTAL % 100)) -eq 0 ] && echo "[da51-git-rehash] $TOTAL objects..." >&2
+done
+
+echo "[da51-git-rehash] Done: $TOTAL objects ($BLOBS blobs, $TREES trees, $COMMITS commits)"
+echo "[da51-git-rehash] Index: $OUTPUT"

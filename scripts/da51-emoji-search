@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""da51-emoji-search — Search for GriessCell keys that produce beautiful
+emoji resonance patterns when hashing the theory's own content.
+
+Usage: da51-emoji-search --terms <terms_file> [--top N]
+"""
+
+import hashlib
+import sys
+import argparse
+import math
+
+SSP = [71, 59, 47, 31, 23, 13, 11, 7]
+
+EMOJI_MAP = {
+    0: "🌀", 1: "🌀", 2: "🌀", 3: "🌀", 4: "🌀",
+    5: "🌀", 6: "🌀", 7: "🌀", 8: "🌀", 9: "🌀",
+    10: "🔮", 11: "🔮", 12: "🔮", 13: "🔮", 14: "🔮",
+    15: "🔮", 16: "🔮", 17: "🔮", 18: "🔮", 19: "🔮",
+    20: "🔒", 21: "🔒", 22: "🔒", 23: "🔒", 24: "🔒",
+    25: "🔒", 26: "🔒", 27: "🔒", 28: "🔒", 29: "🔒",
+    30: "⚒️", 31: "⚒️", 32: "⚒️", 33: "⚒️", 34: "⚒️",
+    35: "⚒️", 36: "⚒️", 37: "⚒️", 38: "⚒️", 39: "⚒️",
+    40: "🛡️", 41: "🛡️", 42: "🛡️", 43: "🛡️", 44: "🛡️",
+    45: "🛡️", 46: "🛡️", 47: "🛡️", 48: "🛡️", 49: "🛡️",
+    50: "🔄", 51: "🔄", 52: "🔄", 53: "🔄", 54: "🔄",
+    55: "🔄", 56: "🔄", 57: "🔄", 58: "🔄", 59: "🔄",
+    60: "🌟", 61: "🌟", 62: "🌟", 63: "🌟", 64: "🌟",
+    65: "🌟", 66: "🌟", 67: "🌟", 68: "🌟", 69: "🌟", 70: "🌟",
+}
+
+def monster_hash_with_cell(content, n, m, c):
+    """Hash content with Calabi-Yau fold of cell (n,m,c)."""
+    h = hashlib.sha256(content.encode()).digest()
+    visible = [
+        int.from_bytes(h[0:8], 'little') % 71,
+        int.from_bytes(h[8:16], 'little') % 59,
+        int.from_bytes(h[16:24], 'little') % 47,
+    ]
+    return (
+        (visible[0] + n) % 71,
+        (visible[1] + m) % 59,
+        (visible[2] + c) % 47,
+    )
+
+def symmetry_score(emoji_grid):
+    """Higher = more symmetric/beautiful pattern."""
+    from collections import Counter
+    counts = Counter(emoji_grid)
+    total = len(emoji_grid)
+    # Entropy (lower = more uniform = more beautiful)
+    entropy = -sum((c/total) * math.log2(c/total) for c in counts.values() if c > 0)
+    # Repetition score (higher = more pattern)
+    max_count = max(counts.values())
+    repetition = max_count / total
+    # Adjacency (same emoji next to each other)
+    adj = sum(1 for i in range(len(emoji_grid)-1) if emoji_grid[i] == emoji_grid[i+1])
+    adj_score = adj / max(len(emoji_grid)-1, 1)
+    # Beauty = low entropy + high repetition + some adjacency
+    return (1.0 / (entropy + 0.1)) * (repetition + adj_score)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--terms", required=True)
+    parser.add_argument("--top", type=int, default=10)
+    args = parser.parse_args()
+
+    with open(args.terms) as f:
+        terms = [l.strip() for l in f if l.strip() and not l.startswith('#')]
+
+    best = []
+
+    # Search a sample of the Griess cell space
+    for n in range(1, 72, 3):
+        for m in range(1, 60, 3):
+            for c in range(1, 48, 3):
+                grid = []
+                for term in terms:
+                    orb = monster_hash_with_cell(term, n, m, c)
+                    grid.append(EMOJI_MAP.get(orb[0], "❓"))
+
+                score = symmetry_score(grid)
+                best.append((score, n, m, c, grid))
+
+    best.sort(reverse=True)
+
+    for rank, (score, n, m, c, grid) in enumerate(best[:args.top]):
+        emoji_str = "".join(grid)
+        print(f"#{rank+1} Cell ({n},{m},{c}) score={score:.4f}")
+        # Print as 8-wide grid
+        for i in range(0, len(grid), 8):
+            print(f"  {''.join(grid[i:i+8])}")
+        print()
+
+if __name__ == "__main__":
+    main()

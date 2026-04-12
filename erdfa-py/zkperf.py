@@ -124,6 +124,26 @@ def zkperf(fn):
         pre_ssp_ctx[1] = (fn_hash >> 3) % 8    # p3 ← function identity high
         pre_ssp_ctx[2] = stack_hash % 8         # p5 ← call stack context
         pre_ssp_ctx[3] = (stack_hash >> 3) % 8  # p7 ← call stack context high
+        # Capture argument hints: actual values of typed params (for reverse prediction)
+        hints = {}
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        for pname, pval in bound.arguments.items():
+            ty = fn.__annotations__.get(pname)
+            if ty in (int, float, bool):
+                hints[pname] = pval
+            elif ty in (str,):
+                hints[pname] = hash(pval) % 256
+            elif isinstance(pval, (int, float, bool)):
+                hints[pname] = pval
+
+        # Inject hints into SSP: label/int args go into p5(Bott2) slot
+        for hi, (hname, hval) in enumerate(hints.items()):
+            if isinstance(hval, (int, float)):
+                idx = 4 + hi  # p11, p13, ... (Bott 3+)
+                if idx < 15:
+                    pre_ssp_ctx[idx] = int(hval) % 8
+
         pre_orb_ctx = erdfa_py.ssp_to_orbifold(bytes(pre_ssp_ctx))
 
         # zkperf context: the full execution context for this call
@@ -165,6 +185,19 @@ def zkperf(fn):
         # Cache this result for future runs
         _cache[ck] = {"ssp": list(post_ssp), "orb": list(post_orb)}
 
+        # Capture return value hint
+        ret_hint = None
+        if isinstance(result, (int, float, bool)):
+            ret_hint = result
+
+        # Inject return value into post SSP
+        post_ssp_ctx = list(post_ssp)
+        post_ssp_ctx[0] = fn_hash % 8
+        post_ssp_ctx[1] = (fn_hash >> 3) % 8
+        if ret_hint is not None and isinstance(ret_hint, int):
+            post_ssp_ctx[4] = ret_hint % 8  # return value in p11 slot
+        post_orb = erdfa_py.ssp_to_orbifold(bytes(post_ssp_ctx))
+
         tag = f"{fn.__module__}.{fn.__qualname__}|{sig_str}"
         dasl = erdfa_py.dasl_addr(tag.encode())
         w = {
@@ -174,10 +207,12 @@ def zkperf(fn):
             "dasl": dasl,
             "lenses": lenses,
             "ctx": ctx,
+            "hints": hints,
+            "result": ret_hint,
             "ts": t0,
             "elapsed_ns": t1 - t0,
             "pre": {"regs": pre, "ssp": list(pre_ssp_ctx), "orb": pre_orb_ctx},
-            "post": {"regs": post, "ssp": list(post_ssp), "orb": post_orb},
+            "post": {"regs": post, "ssp": post_ssp_ctx, "orb": post_orb},
         }
         if early:
             w["prediction"] = early
@@ -201,6 +236,41 @@ def zkperf_dump(path="witnesses.jsonl"):
         print(f"zkperf: predictions {c}/{t} = {acc}, early exits: {e}, cache hits: {_cache_hits}")
     if _cache:
         zkperf_save_cache()
+
+
+# === DA51 Register Groups (from zkperf-witness/src/reg_groups.rs) ===
+# Each group captures a subset of registers matching a DA51 eigenspace type.
+
+REG_GROUPS = {
+    "earth": ["ax","bx","cx","dx","si","di","r14"],       # Type 1: low primes
+    "spoke": ["r8","r11","r12","r13","r15"],               # Type 2: mid primes
+    "hub":   ["r9","r10"],                                  # Type 3: hub primes 19,23
+    "clock": ["sp","ip"],                                   # Type 4: stack+instruction
+    "sheaf": ["r14","r15"],                                 # Type 6: orbifold primes 47,59,71
+    "full":  ["ax","bx","cx","dx","si","di","r8","r9","r10","r11","r12","r13","r14","r15"],  # Type 5
+}
+
+# SSP prime index for each register
+REG_SSP_IDX = {
+    "ax":0,"bx":1,"cx":2,"dx":3,"si":4,"di":5,
+    "r8":6,"r9":7,"r10":8,"r11":9,"r12":10,"r13":11,"r14":12,"r15":13,
+}
+
+def zkperf_group(group="full"):
+    """Decorator variant: capture only a DA51 register group.
+    
+    Usage:
+        @zkperf_group("sheaf")   # only r14,r15 (orbifold primes p47,p59)
+        @zkperf_group("earth")   # ax-di,r14 (low primes)
+        @zkperf_group("hub")     # r9,r10 (primes 19,23)
+    """
+    regs = REG_GROUPS.get(group, REG_GROUPS["full"])
+    def decorator(fn):
+        base = zkperf(fn)
+        base._da51_group = group
+        base._da51_regs = regs
+        return base
+    return decorator
 
 
 def zkperf_clear():
