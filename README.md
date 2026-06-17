@@ -206,6 +206,45 @@ Supports all DASL address types: MonsterWalk, ASTNode, Protocol, NestedCID, Harm
 
 MIT OR Apache-2.0
 
+## Nora Publishing
+
+`erdfa-publish` is configured for publishing to a [Nora](https://github.com/getnora-io/nora) artifact registry instance.
+
+### Prerequisites
+
+- Running Nora instance at `http://127.0.0.1:4000/cargo/index`
+- Nix flakes enabled
+
+### Publishing Steps
+
+```bash
+# 1. Ensure Nora is running
+curl http://127.0.0.1:4000/health  # Should return {"status":"ok"}
+
+# 2. Package the crate
+cargo package
+
+# 3. Publish to Nora registry
+cargo publish --registry nora
+
+# 4. Verify publication
+curl http://127.0.0.1:4000/cargo/index/config.json | jq '.packages[] | select(.name == "erdfa-publish")'
+```
+
+See [docs/NORA_PUBLISHING.md](docs/NORA_PUBLISHING.md) for detailed documentation.
+
+### Using with Nora Registry
+
+For projects that depend on `erdfa-publish`, configure their `.cargo/config.toml`:
+
+```toml
+[source.crates-io]
+replace-with = "nora"
+
+[source.nora]
+registry = "http://127.0.0.1:4000/cargo/index"
+```
+
 ## Customer Onboarding
 
 **New here?** See [docs/CUSTOMER_ONBOARDING.md](docs/CUSTOMER_ONBOARDING.md) — run your first Cl(15,0,0) experiment and get AI peer review in 3 minutes.
